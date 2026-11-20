@@ -319,7 +319,7 @@ mod tests {
             format!("{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", method, path, port)
         };
         // without a token every new route is refused by the guard, whatever the method
-        for (m, p) in [("GET", "/transactions"), ("GET", "/transactions/1"), ("GET", "/accounts"), ("GET", "/categories"), ("POST", "/refresh"), ("GET", "/refresh"), ("POST", "/categories"), ("POST", "/categories/1/rename"), ("POST", "/categories/1/kind"), ("POST", "/categories/1/move"), ("POST", "/categories/1/shift"), ("POST", "/categories/1/delete"), ("POST", "/categories/1/merge"), ("POST", "/transactions/categorize"), ("POST", "/undo"), ("POST", "/redo"), ("GET", "/journal"), ("POST", "/smart/preview"), ("POST", "/smart/rows"), ("POST", "/smart/apply"), ("GET", "/rules"), ("POST", "/suggest"), ("GET", "/suggest"), ("GET", "/suggest/accuracy"), ("POST", "/suggest/accuracy"), ("GET", "/review"), ("POST", "/review"), ("GET", "/insights/recurring"), ("GET", "/insights/anomalies"), ("GET", "/insights/transfers"), ("POST", "/insights/transfers"), ("GET", "/dashboard"), ("POST", "/dashboard")] {
+        for (m, p) in [("GET", "/transactions"), ("GET", "/transactions/1"), ("GET", "/accounts"), ("GET", "/categories"), ("POST", "/refresh"), ("GET", "/refresh"), ("POST", "/categories"), ("POST", "/categories/1/rename"), ("POST", "/categories/1/kind"), ("POST", "/categories/1/move"), ("POST", "/categories/1/shift"), ("POST", "/categories/1/delete"), ("POST", "/categories/1/merge"), ("POST", "/transactions/categorize"), ("POST", "/undo"), ("POST", "/redo"), ("GET", "/journal"), ("POST", "/smart/preview"), ("POST", "/smart/rows"), ("POST", "/smart/apply"), ("GET", "/rules"), ("POST", "/suggest"), ("GET", "/suggest"), ("GET", "/suggest/accuracy"), ("POST", "/suggest/accuracy"), ("GET", "/review"), ("POST", "/review"), ("GET", "/insights/recurring"), ("GET", "/insights/anomalies"), ("GET", "/insights/transfers"), ("POST", "/insights/transfers"), ("GET", "/dashboard"), ("POST", "/dashboard"), ("GET", "/reports"), ("POST", "/reports"), ("GET", "/reports/1"), ("PUT", "/reports/1"), ("DELETE", "/reports/1"), ("POST", "/reports/1/preview"), ("POST", "/reports/1/send-test"), ("POST", "/reports/1/enable"), ("GET", "/reports/1/runs"), ("GET", "/schedule/preview?kind=weekly&weekday=mon&time=07:30"), ("POST", "/schedule/preview"), ("GET", "/mail/status"), ("POST", "/mail/status")] {
             assert_eq!(raw(port, &no_token(m, p)).status, 401, "{} {}", m, p);
         }
         // with a token they reach the router; this state has no database, so data routes say 503
@@ -353,6 +353,25 @@ mod tests {
             ("POST", "/dashboard", 405),
             ("GET", "/insights", 404),
             ("GET", "/insights/other", 404),
+            ("GET", "/reports", 503),
+            ("POST", "/reports", 400),
+            ("PUT", "/reports", 405),
+            ("GET", "/reports/1", 405),
+            ("PUT", "/reports/1", 400),
+            ("DELETE", "/reports/1", 503),
+            ("POST", "/reports/1", 405),
+            ("POST", "/reports/1/preview", 503),
+            ("GET", "/reports/1/preview", 405),
+            ("POST", "/reports/1/send-test", 503),
+            ("GET", "/reports/1/send-test", 405),
+            ("POST", "/reports/1/enable", 400),
+            ("GET", "/reports/1/enable", 405),
+            ("GET", "/reports/1/runs", 503),
+            ("POST", "/reports/1/runs", 405),
+            ("GET", "/reports/1/other", 404),
+            ("GET", "/schedule/preview?kind=weekly&weekday=mon&time=07:30", 200),
+            ("POST", "/schedule/preview", 405),
+            ("POST", "/mail/status", 405),
         ] {
             assert_eq!(raw(port, &ui_request(m, p, port, TOKEN)).status, want, "{} {}", m, p);
         }

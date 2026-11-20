@@ -29,6 +29,39 @@ pub fn set_db_passphrase(p: &str) -> Result<()> {
     entry()?.set_password(p).map_err(|e| anyhow::anyhow!("keyring write failed: {}", e))
 }
 
+/// Keyring user for the Gmail refresh token (service `omafinances`). Only the refresh token is stored; access
+/// tokens stay in memory and the client secret stays in the Google client JSON file.
+pub const GMAIL_REFRESH_USER: &str = "gmail-refresh-token";
+
+fn gmail_entry() -> Result<keyring::Entry> {
+    keyring::Entry::new(SERVICE, GMAIL_REFRESH_USER).context("open keyring entry")
+}
+
+/// The stored Gmail refresh token, or `None` when the account has not been authorized.
+pub fn gmail_refresh_token() -> Result<Option<String>> {
+    match gmail_entry()?.get_password() {
+        Ok(t) => Ok(Some(t)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("keyring read failed: {}", e)),
+    }
+}
+
+pub fn set_gmail_refresh_token(t: &str) -> Result<()> {
+    if t.is_empty() {
+        bail!("empty refresh token");
+    }
+    gmail_entry()?.set_password(t).map_err(|e| anyhow::anyhow!("keyring write failed: {}", e))
+}
+
+/// Remove the stored Gmail refresh token. Returns whether one existed.
+pub fn clear_gmail_refresh_token() -> Result<bool> {
+    match gmail_entry()?.delete_credential() {
+        Ok(()) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(e) => Err(anyhow::anyhow!("keyring delete failed: {}", e)),
+    }
+}
+
 /// Value of `KEY=` in a dotenv-style file (optional surrounding quotes stripped). Never logs the value.
 pub fn read_env_value(file: &Path, key: &str) -> Result<Option<String>> {
     let text = std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;

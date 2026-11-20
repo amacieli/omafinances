@@ -105,17 +105,24 @@ Tabs: Dashboard (monthly out and in bars, category bars with share of total out,
 
 ### Review queue (`R`; overlay, keys work inside it)
 
-One uncategorized row at a time. The header says which mode the queue is in: `Suggestions: top-3 accuracy ...` once the gate is open, or `Bootstrap: biggest payees first` with what unlocks suggestions. Rows are shown biggest payee group first in bootstrap mode.
+One entry per payee group (normalized payee + sign, uncategorized rows only). Each group shows its payee, row count, total, date span, the pending category (`none: press 1/2/3 or c` until one is chosen), its numbered suggestion chips, and `Will categorize N of M`. The header says which mode the queue is in: `Suggestions: top-3 accuracy ...` once the gate is open, or `Bootstrap: biggest payees first` with what unlocks suggestions. Suggest mode sorts by top-option confidence; bootstrap sorts by group size.
+
+Pressing `1`/`2`/`3` or `c` only chooses the group's pending category. Nothing is written until `y`, which categorizes the ticked rows (one undoable request; `u` undoes it) and moves on to the next group. `y` with no ticked rows or no pending category shows a message and sends nothing. `Enter` opens the group's rows, paged by 50, where `Space` ticks or unticks single rows (all are ticked by default).
 
 | Key | Action |
 | --- | --- |
-| `1` / `2` / `3` | Accept that suggestion (the normal `POST /transactions/categorize`; `u` undoes it) |
-| `c` | Categorize this row with the category picker |
-| `C` | Preview and clear this payee group in one step (bootstrap mode only) |
-| `s` | Skip: leave the row in the queue, go to the next |
-| `Backspace` | Previous row |
+| `j` / `Down`, `k` / `Up` | Move between groups (and their rows when expanded) |
+| `1` / `2` / `3` | Set the group's pending category to that suggestion (applied by `y`) |
+| `c` | Choose the pending category with the category picker |
+| `C` | Full categorize preview for the group's representative row |
+| `y` | Categorize the ticked rows of the group as its pending category (`u` undoes it) |
+| `Space` | Tick or untick this row (on the group header: all rows of the group) |
+| `a` / `n` | Tick every row of the group / untick every row of the group |
+| `Enter` | Show or hide the group's rows; on "more", load the next 50 |
+| `s` | Skip: go to the next group (it stays in the queue) |
+| `Backspace` | Previous group |
 | `u` | Undo the last change |
-| `Esc` | Leave the queue |
+| `Esc` | Collapse expanded groups; with none expanded, leave the queue |
 
 ### Sidebar (focus: sidebar, Tab)
 

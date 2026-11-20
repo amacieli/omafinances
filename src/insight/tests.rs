@@ -488,15 +488,16 @@ fn review_frequency_mode_keeps_payee_groups_together() {
     let m = model_of(&c);
     let q = review::queue(&c, &m, 50, 0);
     assert!(!q.suggest_mode);
-    assert_eq!(q.remaining, 6);
+    assert_eq!(q.remaining, 3, "three groups, not six rows");
     let ids: Vec<i64> = q.rows.iter().map(|r| c.txns[r.idx].id).collect();
-    // zeta (3 rows) newest first, alpha (2), solo (1)
-    assert_eq!(ids, vec![6, 3, 1, 2, 5, 4]);
-    assert_eq!(q.rows.iter().map(|r| r.payee_count).collect::<Vec<_>>(), vec![3, 3, 3, 2, 2, 1]);
+    // zeta (3 rows) first, alpha (2), solo (1); each is represented by its most recent row
+    assert_eq!(ids, vec![6, 2, 4]);
+    assert_eq!(q.rows.iter().map(|r| r.payee_count).collect::<Vec<_>>(), vec![3, 2, 1]);
+    assert_eq!(q.rows.iter().map(|r| r.group.count).collect::<Vec<_>>(), vec![3, 2, 1]);
     assert!(q.rows.iter().all(|r| r.options.is_empty()));
-    let page = review::queue(&c, &m, 2, 3);
-    assert_eq!(page.rows.iter().map(|r| c.txns[r.idx].id).collect::<Vec<_>>(), vec![2, 5]);
-    assert_eq!(page.remaining, 6);
+    let page = review::queue(&c, &m, 1, 1);
+    assert_eq!(page.rows.iter().map(|r| c.txns[r.idx].id).collect::<Vec<_>>(), vec![2]);
+    assert_eq!(page.remaining, 3);
     // a matching rule still shows its option in bootstrap mode
     let norm = m.norms[c.txns.binary_search_by_key(&4, |t| t.id).unwrap()].clone();
     let m2 = Model::build(&c, &Aliases::none(), &[rule(1, &norm, 1)]);
@@ -525,3 +526,131 @@ fn review_suggest_mode_sorts_by_confidence_then_newest() {
     assert_eq!(j["mode"], "suggest");
     assert_eq!(j["rows"][0]["options"][0]["source"], "model");
 }
+
+fn group_report(c: &Cache, q: &review::Queue) -> Value {
+    review::report(c, q)
+}
+
+#[test]
+fn review_groups_merge_payee_variants_and_split_by_sign() {
+    let v = vec![
+        tx(1, "2026-10-01", "Zeta Mart #1042 Portland OR", 5.0, 1, None),
+        tx(2, "2026-10-03", "ZETA MART", 7.0, 1, None),
+        tx(3, "2026-10-08", "zeta  mart 0099", 3.0, 1, None),
+        tx(4, "2026-10-05", "Zeta Mart", -20.0, 1, None), // refund: its own (money in) group
+        tx(5, "2026-10-06", "Zeta Mart", -4.5, 1, None),
+        tx(6, "2026-10-02", "Other Shop", 9.0, 1, None),
+        tx(7, "2026-10-04", "Zeta Mart", 1.0, 1, Some(1)), // categorized: not in the queue
+    ];
+    let c = cache_of(v, 1);
+    let m = model_of(&c);
+    let q = review::queue(&c, &m, 50, 0);
+    assert_eq!(q.remaining, 3);
+    // frequency mode: group size desc; the representative is the most recent row of each group
+    assert_eq!(q.rows.iter().map(|r| c.txns[r.idx].id).collect::<Vec<_>>(), vec![3, 5, 6]);
+    let (out, inc) = (&q.rows[0].group, &q.rows[1].group);
+    assert_eq!((out.key.as_str(), out.income, out.count), ("zeta mart", false, 3));
+    assert_eq!((inc.key.as_str(), inc.income, inc.count), ("zeta mart", true, 2));
+    assert_eq!((out.total, inc.total), (15.0, -24.5));
+    let j = group_report(&c, &q);
+    let r0 = &j["rows"][0];
+    assert_eq!(r0["group_key"], "zeta mart");
+    assert_eq!(r0["group_count"], 3);
+    assert_eq!(r0["group_total"], 15.0);
+    assert_eq!(r0["group_ids"], serde_json::json!([3, 2, 1]));
+    assert_eq!((r0["group_date_min"].as_str(), r0["group_date_max"].as_str()), (Some("2026-10-01"), Some("2026-10-08")));
+    assert_eq!(r0["id"], 3, "row fields describe the representative");
+    assert_eq!(r0["payee"], "zeta  mart 0099");
+    let r1 = &j["rows"][1];
+    assert_eq!(r1["group_ids"], serde_json::json!([5, 4]));
+    assert_eq!((r1["group_date_min"].as_str(), r1["group_date_max"].as_str()), (Some("2026-10-05"), Some("2026-10-06")));
+    assert_eq!(j["rows"][2]["group_count"], 1);
+    // payee_count keeps its meaning: uncategorized rows with the same normalized payee, either sign
+    assert_eq!(j["rows"].as_array().unwrap().iter().map(|r| r["payee_count"].as_i64().unwrap()).collect::<Vec<_>>(), vec![5, 5, 1]);
+
+    // aliases feed the group key: "ZM" joins the same group as the Zeta Mart variants
+    let aliases = Aliases::compile(&[crate::smart::normalize::AliasRow { pattern: "zm".into(), canonical: "Zeta Mart".into(), is_regex: false }]);
+    let c2 = cache_of(vec![tx(1, "2026-10-01", "ZM", 2.0, 1, None), tx(2, "2026-10-02", "Zeta Mart #7", 2.5, 1, None)], 1);
+    let m2 = Model::build(&c2, &aliases, &[]);
+    let q2 = review::queue(&c2, &m2, 50, 0);
+    assert_eq!((q2.remaining, q2.rows[0].group.count, q2.rows[0].group.total), (1, 2, 4.5));
+}
+
+#[test]
+fn review_group_ids_capped_at_500_most_recent_first() {
+    let base = d("2025-01-01");
+    let mut v: Vec<RawTxn> = (0..620).map(|i| tx(i + 1, &ds(base + Days::new(i as u64)), "Big Payee", 10.0, 1, None)).collect();
+    v.push(tx(1000, "2026-11-01", "Tiny", 1.0, 1, None));
+    let c = cache_of(v, 1);
+    let m = model_of(&c);
+    let q = review::queue(&c, &m, 50, 0);
+    assert_eq!(q.remaining, 2);
+    assert_eq!(q.rows[0].group.count, 620);
+    let j = group_report(&c, &q);
+    let r0 = &j["rows"][0];
+    let ids = r0["group_ids"].as_array().unwrap();
+    assert_eq!(ids.len(), review::GROUP_IDS_CAP);
+    assert_eq!((ids[0].as_i64(), ids[499].as_i64()), (Some(620), Some(121)));
+    assert_eq!(r0["group_total"], 6200.0);
+    assert_eq!(r0["group_count"], 620);
+    assert_eq!((r0["group_date_min"].as_str(), r0["group_date_max"].as_str()), (Some("2025-01-01"), Some(ds(base + Days::new(619)).as_str())));
+    assert_eq!(j["rows"][1]["group_key"], "tiny");
+    assert_eq!(j["rows"][1]["group_ids"], serde_json::json!([1000]));
+}
+
+#[test]
+fn review_paging_walks_groups_exactly_once_in_both_modes() {
+    // frequency mode: 5 groups (C Three splits by sign), 9 rows
+    let v = vec![
+        tx(1, "2026-10-01", "A One", 1.0, 1, None),
+        tx(2, "2026-10-02", "A One", 1.0, 1, None),
+        tx(3, "2026-10-03", "A One", 1.0, 1, None),
+        tx(4, "2026-10-04", "B Two", 1.0, 1, None),
+        tx(5, "2026-10-05", "B Two", 1.0, 1, None),
+        tx(6, "2026-10-06", "C Three", 1.0, 1, None),
+        tx(7, "2026-10-07", "C Three", -1.0, 1, None),
+        tx(8, "2026-10-08", "D Four", 1.0, 1, None),
+        tx(9, "2026-10-09", "D Four", 1.0, 1, None),
+    ];
+    let c = cache_of(v, 1);
+    let m = model_of(&c);
+    let full: Vec<i64> = review::queue(&c, &m, 200, 0).rows.iter().map(|r| c.txns[r.idx].id).collect();
+    // A (3 rows); B and D (2 each, D's most recent row is newer); C money in, then C money out (1 each, newest first)
+    assert_eq!(full, vec![3, 9, 5, 7, 6]);
+    let mut paged = Vec::new();
+    for off in 0..5 {
+        let p = review::queue(&c, &m, 1, off);
+        assert_eq!(p.remaining, 5);
+        paged.extend(p.rows.iter().map(|r| c.txns[r.idx].id));
+    }
+    assert_eq!(paged, full);
+    assert!(review::queue(&c, &m, 1, 5).rows.is_empty());
+
+    // suggest mode: a separable model, plus two new groups and one payee split by sign
+    let mut sv = separable(160, 4, 21);
+    sv.push(tx(2000, "2026-10-01", "Merchantb Store 1", 21.0, 1, None));
+    sv.push(tx(2001, "2026-10-09", "Merchantb Store 1", 22.0, 1, None));
+    sv.push(tx(2002, "2026-10-05", "Merchantc Store 1", 41.0, 1, None));
+    sv.push(tx(2003, "2026-10-05", "Totally Unknown Place", 5.5, 1, None));
+    sv.push(tx(2004, "2026-10-06", "Totally Unknown Place", -5.5, 1, None));
+    let c = cache_of(sv, 4);
+    let m = model_of(&c);
+    let all = review::queue(&c, &m, 200, 0);
+    assert!(all.suggest_mode);
+    assert_eq!(all.remaining, 4, "merchantb (2 rows), merchantc, unknown money out, unknown money in");
+    for w in all.rows.windows(2) {
+        let (a, b) = (w[0].options.first().map_or(0.0, |o| o.confidence), w[1].options.first().map_or(0.0, |o| o.confidence));
+        assert!(a >= b, "sorted by top confidence");
+    }
+    let merchantb = all.rows.iter().find(|r| r.group.key == m.norms[c.txns.binary_search_by_key(&2000, |t| t.id).unwrap()]).unwrap();
+    assert_eq!((merchantb.group.count, merchantb.idx), (2, c.txns.binary_search_by_key(&2001, |t| t.id).unwrap()));
+    assert_eq!(merchantb.group.idx.iter().map(|&i| c.txns[i].id).collect::<Vec<_>>(), vec![2001, 2000]);
+    let ids: Vec<i64> = all.rows.iter().map(|r| c.txns[r.idx].id).collect();
+    let mut paged = Vec::new();
+    for off in (0..4).step_by(2) {
+        paged.extend(review::queue(&c, &m, 2, off).rows.iter().map(|r| c.txns[r.idx].id));
+    }
+    assert_eq!(paged, ids);
+    assert!(review::queue(&c, &m, 2, 4).rows.is_empty());
+}
+

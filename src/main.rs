@@ -3,6 +3,8 @@
 //!   omafinances                      open the app
 //!   omafinances keyring-import [F]   copy DB_PASSPHRASE from F (default: .env beside the database) into the keyring
 //!   omafinances check                open + migrate the database and print counts (no secrets, no payees)
+//!   omafinances report run|timers|list   headless reports (see docs/PHASE6_CONTRACT.md)
+//!   omafinances gmail-auth [--open] | gmail-status
 //!   omafinances --version
 
 use anyhow::{bail, Context, Result};
@@ -28,10 +30,13 @@ fn run() -> Result<()> {
             println!("omafinances {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
+        Some("report") => std::process::exit(omafinances::report::cli::run_cli(&args[1..])?),
+        Some("gmail-auth") => omafinances::mail::cli::gmail_auth(&args[1..]),
+        Some("gmail-status") => omafinances::mail::cli::gmail_status(&args[1..]),
         Some("keyring-import") => keyring_import(args.get(1).map(PathBuf::from)),
         Some("check") => check(),
         None => launch(),
-        Some(other) => bail!("unknown argument {:?} (try: keyring-import, check, --version)", other),
+        Some(other) => bail!("unknown argument {:?} (try: keyring-import, check, report, gmail-auth, gmail-status, --version)", other),
     }
 }
 

@@ -251,7 +251,7 @@ function accuracyText(a) {
   return "top-3 accuracy " + pct(a.top3) + " on " + (Number(a.labeled) || 0) + " labeled"
 }
 
-// The review header: mode, the reason and the counts.
+// The review header: mode, the reason and the counts (remaining and loaded count groups).
 // info: {mode: "suggest"|"frequency", acc: /suggest/accuracy body or null, remaining, index, loaded}
 // Returns {mode, detail, progress}. Texts follow the Phase 5 contract wording.
 function reviewHeader(info) {
@@ -271,11 +271,7 @@ function reviewHeader(info) {
     if (acc.accuracy && labeled >= ACCURACY_MIN_LABELED)
       detail = "top-3 is " + pct(acc.accuracy.top3) + " now"
   }
-  var rem = Number(info.remaining) || 0
-  var progress = rem <= 0 ? "queue empty"
-               : (fmtN(rem) + (rem === 1 ? " row" : " rows") + " left  \u00b7  row " + (Number(info.index) + 1)
-                  + " of " + fmtN(Math.max(rem, Number(info.loaded) || 0)))
-  return { mode: mode, detail: detail, progress: progress }
+  return { mode: mode, detail: detail, progress: groupProgress(info.remaining, info.index, info.loaded) }
 }
 
 // The numbered option chips of a review row, at most OPTION_MAX.
@@ -299,33 +295,14 @@ function optionFor(options, d) {
 }
 
 // ---------------------------------------------------------------- review queue state
-// After a GET /review: more rows are waiting when the page was full and the queue is not loaded.
+// After a GET /review: more groups are waiting when the page was full and the queue is not loaded.
 function reviewHasMore(loadedCount, remaining, lastPageLen) {
   return lastPageLen >= REVIEW_PAGE && loadedCount < remaining
 }
 
-// The offset of the next page. Accepted rows leave the server's queue, so the rows still held
-// locally are exactly the ones before the server's next unseen row.
+// The offset of the next page. Groups that left the server's queue are gone from the loaded list,
+// so the loaded groups are exactly the ones before the server's next unseen group.
 function reviewNextOffset(rows) { return (rows || []).length }
-
-function reviewIndexOfId(rows, id) {
-  for (var i = 0; i < (rows || []).length; i++) if (Number(rows[i].id) === Number(id)) return i
-  return -1
-}
-
-// The rows without the row with this id (a new array).
-function removeRow(rows, id) {
-  var out = []
-  for (var i = 0; i < (rows || []).length; i++) if (Number(rows[i].id) !== Number(id)) out.push(rows[i])
-  return out
-}
-
-// After a row leaves the list, the cursor keeps its position (the next row takes it), clamped.
-function cursorAfterRemove(oldIndex, newLen) { return clamp(oldIndex, newLen) }
-
-// Skip: the cursor moves on, the row stays in the queue. Previous: the cursor moves back.
-function reviewSkip(i, n) { return moveIndex(i, 1, n) }
-function reviewPrev(i, n) { return moveIndex(i, -1, n) }
 
 // Progress of the queue as a fraction: how much of the starting queue is handled.
 function reviewProgress(startRemaining, remaining) {
@@ -333,6 +310,215 @@ function reviewProgress(startRemaining, remaining) {
   var left = Number(remaining) || 0
   if (start <= 0) return 1
   return Math.max(0, Math.min(1, (start - left) / start))
+}
+
+// ---------------------------------------------------------------- review queue: payee groups
+// The queue has one entry per payee group (GET /review rows; each row describes the group's most
+// recent row and carries group_ids). Per-group state is keyed by gkey(): the group key plus the sign.
+//   unticked  {gkey: {id: true}}   every row is ticked unless listed here (ticked by default)
+//   pending   {gkey: {category_id, path}}   the category y will apply; absent = the default
+//   expanded  {gkey: true}          Enter shows the group's rows
+//   rowsByKey {gkey: [rows]}        the expanded rows loaded so far (POST /smart/rows, 50 a page)
+// Items are the flat list the view moves over: a group header, a loaded row, or "more".
+
+// Group key: the normalized payee and the sign (out = money out, in = money in).
+function gkey(g) { return String(g.group_key || "") + "|" + (Number(g.amount) < 0 ? "in" : "out") }
+
+// The group's uncategorized row ids, as numbers (the representative's own id when the list is absent).
+function groupIds(g) {
+  if (!g) return []
+  var ids = g.group_ids && g.group_ids.length ? g.group_ids : [g.id]
+  var out = []
+  for (var i = 0; i < ids.length; i++) {
+    var v = Number(ids[i])
+    if (isFinite(v)) out.push(v)
+  }
+  return out
+}
+
+// How many uncategorized rows the group has (the server's count; never less than the ids held).
+function groupCount(g) {
+  return Math.max(Number(g && g.group_count) || 0, groupIds(g).length)
+}
+
+function groupByKey(groups, key) {
+  for (var i = 0; i < (groups || []).length; i++) if (gkey(groups[i]) === key) return groups[i]
+  return null
+}
+
+function groupIndexOf(groups, key) {
+  for (var i = 0; i < (groups || []).length; i++) if (gkey(groups[i]) === key) return i
+  return -1
+}
+
+// The group without the given key (a new array).
+function removeGroup(groups, key) {
+  var out = []
+  for (var i = 0; i < (groups || []).length; i++) if (gkey(groups[i]) !== key) out.push(groups[i])
+  return out
+}
+
+// The ids the next "Enter: more" page asks /smart/rows for.
+function groupPageIds(g, loaded) { return groupIds(g).slice(loaded, loaded + REVIEW_PAGE) }
+
+function isTicked(unticked, key, id) {
+  var u = unticked && unticked[key]
+  return !(u && u[id])
+}
+
+function tickedIds(g, unticked) {
+  var k = gkey(g)
+  return groupIds(g).filter(function(id) { return isTicked(unticked, k, id) })
+}
+
+function tickedCount(g, unticked) { return tickedIds(g, unticked).length }
+
+function allTicked(g, unticked) {
+  var ids = groupIds(g)
+  return ids.length > 0 && tickedCount(g, unticked) === ids.length
+}
+
+// A copy of unticked with the row id flipped (ticked <-> unticked). Empty entries are dropped.
+function toggleTick(unticked, key, id) {
+  var out = Object.assign({}, unticked)
+  var u = Object.assign({}, out[key] || {})
+  if (u[id]) delete u[id]
+  else u[id] = true
+  if (Object.keys(u).length === 0) delete out[key]
+  else out[key] = u
+  return out
+}
+
+// A copy of unticked with every row of the group ticked (on) or unticked (off).
+function setGroupTicks(unticked, key, g, on) {
+  var out = Object.assign({}, unticked)
+  if (on) { delete out[key]; return out }
+  var u = {}
+  groupIds(g).forEach(function(id) { u[id] = true })
+  out[key] = u
+  return out
+}
+
+// The default pending category: the top option when suggestions are enabled, else none.
+function defaultPending(g, enabled) {
+  if (!g || enabled !== true) return null
+  var top = (g.options || [])[0]
+  if (!top) return null
+  return { category_id: Number(top.category_id), path: String(top.path || "") }
+}
+
+// The pending category of a group: a chosen one, else the default.
+function pendingFor(pending, g, enabled) {
+  var p = pending && pending[gkey(g)]
+  return p ? p : defaultPending(g, enabled)
+}
+
+// Pending as the header states it.
+function pendingText(p) {
+  if (!p) return "none: press 1/2/3 or c"
+  return "category: " + String(p.path) + "   (y applies)"
+}
+
+// What y does for a group. ok false carries the toast text; no request is made then.
+function applyPlan(g, pending, unticked) {
+  if (!g) return { ok: false, message: "no group under the cursor" }
+  if (!pending) return { ok: false, message: "no category yet: press 1, 2 or 3, or c to pick one" }
+  var ids = tickedIds(g, unticked)
+  if (ids.length === 0) return { ok: false, message: "no rows ticked: Space ticks a row, a ticks all" }
+  return { ok: true, ids: ids, category_id: pending.category_id, path: String(pending.path) }
+}
+
+// \"Will categorize 38 of 41\".
+function willText(g, unticked) {
+  return "Will categorize " + fmtN(tickedCount(g, unticked)) + " of " + fmtN(groupCount(g))
+}
+
+// "2026-11-02" for one day, "2026-09-02 to 2026-11-18" for a span.
+function dateSpan(g) {
+  var a = String(g.group_date_min || g.date || "")
+  var b = String(g.group_date_max || g.date || "")
+  if (a === b || b === "") return a
+  return a + " to " + b
+}
+
+// \"Netflix  ·  41 rows  ·  $1,234.56  ·  2026-09-02 to 2026-11-18\".
+function groupLine(g) {
+  var n = groupCount(g)
+  return [String(g.payee || ""), fmtN(n) + (n === 1 ? " row" : " rows"), moneyCents(g.group_total),
+          dateSpan(g)].join("  \u00b7  ")
+}
+
+// One transaction under an expanded group: "2026-11-02  AMAZON MKTP  $24.99  Chase Sapphire".
+function rowLine(r) {
+  return String(r.date || "") + "  " + String(r.payee || "") + "  " + moneyCents(r.amount) + "  " + String(r.account || "")
+}
+
+// Keeps the entries of map whose keys are in keys (a new object).
+function pruneTo(map, keys) {
+  var out = {}
+  var src = map || {}
+  for (var i = 0; i < (keys || []).length; i++) if (src[keys[i]] !== undefined) out[keys[i]] = src[keys[i]]
+  return out
+}
+
+function groupKeys(groups) { return (groups || []).map(gkey) }
+
+function anyExpanded(expanded) { return Object.keys(expanded || {}).length > 0 }
+
+// The flat list the review view moves over. kinds: "group" (header), "row" (loaded row of an
+// expanded group), "more" (rows of an expanded group still to load; Enter loads the next page).
+function groupItems(groups, expanded, rowsByKey, loadingByKey) {
+  var items = []
+  for (var i = 0; i < (groups || []).length; i++) {
+    var g = groups[i]
+    var k = gkey(g)
+    items.push({ kind: "group", key: "g:" + k, gkey: k, g: g })
+    if (!expanded || !expanded[k]) continue
+    var rows = (rowsByKey && rowsByKey[k]) || []
+    for (var j = 0; j < rows.length; j++)
+      items.push({ kind: "row", key: "r:" + k + ":" + Number(rows[j].id), gkey: k, g: g, row: rows[j] })
+    var left = groupIds(g).length - rows.length
+    if (left > 0)
+      items.push({ kind: "more", key: "m:" + k, gkey: k, g: g, left: left, loaded: rows.length,
+                   loading: !!(loadingByKey && loadingByKey[k]) })
+  }
+  return items
+}
+
+// The first group header at or after i, else before it; 0 when there are no items.
+function nearestGroup(items, i) {
+  var n = (items || []).length
+  if (n === 0) return 0
+  var start = clamp(i, n)
+  for (var j = start; j < n; j++) if (items[j].kind === "group") return j
+  for (var k = start; k >= 0; k--) if (items[k].kind === "group") return k
+  return start
+}
+
+// Where the cursor is after the items changed: its key when still there, else the position it had
+// (the next group takes it when a group left), moved to a group header.
+function cursorIndex(items, key, fallback) {
+  var i
+  for (i = 0; i < (items || []).length; i++) if (items[i].key === key) return i
+  // a row or "more" of a group that is still there: its header
+  var gk = key.indexOf("r:") === 0 ? key.slice(2, key.lastIndexOf(":")) : key.indexOf("m:") === 0 ? key.slice(2) : null
+  if (gk !== null)
+    for (i = 0; i < (items || []).length; i++) if (items[i].key === "g:" + gk) return i
+  return nearestGroup(items, fallback)
+}
+
+// s and Backspace: the next (dir +1) or previous (dir -1) group header; stays put when there is none.
+function groupStep(items, i, dir) {
+  for (var j = i + dir; j >= 0 && j < (items || []).length; j += dir) if (items[j].kind === "group") return j
+  return i
+}
+
+// The review header line for the group under the cursor (index = its place in the queue).
+function groupProgress(remaining, index, loaded) {
+  var rem = Number(remaining) || 0
+  if (rem <= 0) return "queue empty"
+  return fmtN(rem) + (rem === 1 ? " group" : " groups") + " left  \u00b7  group " + (Number(index) + 1)
+         + " of " + fmtN(Math.max(rem, Number(loaded) || 0))
 }
 
 // ---------------------------------------------------------------- dashboard tabs headers

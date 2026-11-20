@@ -189,7 +189,7 @@ test('suggestions: top option, on/off reason, detail line', () => {
 test('review header: suggest mode and both bootstrap wordings', () => {
   const sugg = { enabled: true, reason: null, accuracy: { labeled: 412, folds: 5, top1: 0.6, top3: 0.78 } }
   eq(I.reviewHeader({ mode: 'suggest', acc: sugg, remaining: 412, index: 0, loaded: 50 }),
-     { mode: 'Suggestions: top-3 accuracy 78% on 412 labeled', detail: '', progress: '412 rows left  \u00b7  row 1 of 412' })
+     { mode: 'Suggestions: top-3 accuracy 78% on 412 labeled', detail: '', progress: '412 groups left  \u00b7  group 1 of 412' })
   const boot = { enabled: false, reason: 'only 3 labeled rows (need 30)', accuracy: { labeled: 3, folds: 5, top1: 0, top3: 0 } }
   eq(I.reviewHeader({ mode: 'frequency', acc: boot, remaining: 88, index: 4, loaded: 50 }).mode,
      'Bootstrap: biggest payees first - suggestions unlock after 30 labeled rows and 70% top-3 accuracy (you have 3)')
@@ -202,7 +202,7 @@ test('review header: suggest mode and both bootstrap wordings', () => {
   eq(I.reviewHeader({ mode: 'frequency', acc: null, remaining: 0, index: 0, loaded: 0 }),
      { mode: 'Bootstrap: biggest payees first', detail: 'checking suggestion accuracy...', progress: 'queue empty' })
   eq(I.reviewHeader({ mode: 'frequency', acc: boot, remaining: 1, index: 0, loaded: 1 }).progress,
-     '1 row left  \u00b7  row 1 of 1')
+     '1 group left  \u00b7  group 1 of 1')
 })
 
 test('option chips: at most three, numbered from 1, and the digit lookup', () => {
@@ -223,27 +223,119 @@ test('option chips: at most three, numbered from 1, and the digit lookup', () =>
   eq(I.optionChips(null), [])
 })
 
-test('review queue state: paging, offsets, removal, cursor after removal', () => {
+test('review queue state: paging, offsets, progress', () => {
   eq(I.reviewHasMore(50, 120, 50), true)
   eq(I.reviewHasMore(120, 120, 50), false)
   eq(I.reviewHasMore(50, 120, 20), false)
   eq(I.reviewNextOffset([{ id: 1 }, { id: 2 }]), 2)
   eq(I.reviewNextOffset([]), 0)
-  const rows = [{ id: 1 }, { id: 2 }, { id: 3 }]
-  eq(I.reviewIndexOfId(rows, 2), 1)
-  eq(I.reviewIndexOfId(rows, 9), -1)
-  eq(I.removeRow(rows, 2), [{ id: 1 }, { id: 3 }])
-  eq(rows.length, 3)
-  eq(I.cursorAfterRemove(2, 2), 1)
-  eq(I.cursorAfterRemove(0, 2), 0)
-  eq(I.cursorAfterRemove(0, 0), 0)
-  eq(I.reviewSkip(0, 3), 1)
-  eq(I.reviewSkip(2, 3), 2)
-  eq(I.reviewPrev(0, 3), 0)
-  eq(I.reviewPrev(2, 3), 1)
   eq(I.reviewProgress(100, 75), 0.25)
   eq(I.reviewProgress(0, 0), 1)
   eq(I.reviewProgress(10, 20), 0)
+  eq(I.groupProgress(0, 0, 0), 'queue empty')
+  eq(I.groupProgress(3, 1, 2), '3 groups left  \u00b7  group 2 of 3')
+})
+
+// A /review group row, as the Rust side will return it (group_* fields added by the lane in progress).
+function grp(over) {
+  return Object.assign({ id: 10, group_key: 'netflix', payee: 'NETFLIX', amount: -15.49, date: '2026-11-02',
+    account: 'Chase', group_count: 41, group_total: -635.12, group_date_min: '2026-09-02',
+    group_date_max: '2026-11-18', group_ids: [10, 11, 12, 13], options: [] }, over || {})
+}
+
+test('groups: key by payee and sign, ids as numbers, counts', () => {
+  eq(I.gkey(grp()), 'netflix|in')
+  eq(I.gkey(grp({ amount: 20 })), 'netflix|out')
+  eq(I.groupIds(grp()), [10, 11, 12, 13])
+  eq(I.groupIds(grp({ group_ids: null })), [10])
+  eq(I.groupIds(grp({ group_ids: ['7', 'x', 8] })), [7, 8])
+  eq(I.groupCount(grp()), 41)
+  eq(I.groupCount(grp({ group_count: 0 })), 4)
+  eq(I.groupPageIds(grp({ group_ids: Array.from({ length: 120 }, (_, i) => i + 1) }), 50).length, 50)
+  eq(I.groupPageIds(grp({ group_ids: Array.from({ length: 120 }, (_, i) => i + 1) }), 100).length, 20)
+})
+
+test('ticks: default all ticked, toggle one row, all and none for a group', () => {
+  const g = grp()
+  const k = I.gkey(g)
+  eq(I.tickedIds(g, {}), [10, 11, 12, 13])
+  eq(I.willText(g, {}), 'Will categorize 4 of 41')
+  let u = I.toggleTick({}, k, 11)
+  eq(I.tickedIds(g, u), [10, 12, 13])
+  eq(I.willText(g, u), 'Will categorize 3 of 41')
+  eq(I.allTicked(g, u), false)
+  u = I.toggleTick(u, k, 11)
+  eq(u, {})
+  eq(I.allTicked(g, u), true)
+  u = I.setGroupTicks({}, k, g, false)
+  eq(I.tickedCount(g, u), 0)
+  eq(I.willText(g, u), 'Will categorize 0 of 41')
+  eq(I.setGroupTicks(u, k, g, true), {})
+  // ticks of one group never leak into another
+  eq(I.tickedCount(grp({ group_key: 'hulu' }), I.setGroupTicks({}, k, g, false)), 4)
+})
+
+test('pending: default is the top option when suggestions are on, else none; apply plan', () => {
+  const opts = [{ category_id: 3, path: 'Bills › Streaming' }, { category_id: 4, path: 'Other' }]
+  const g = grp({ options: opts })
+  eq(I.pendingFor({}, g, true), { category_id: 3, path: 'Bills › Streaming' })
+  eq(I.pendingFor({}, g, false), null)
+  eq(I.pendingFor({}, grp(), true), null)
+  eq(I.pendingText(null), 'none: press 1/2/3 or c')
+  eq(I.pendingText({ category_id: 4, path: 'Other' }), 'category: Other   (y applies)')
+  const pend = { [I.gkey(g)]: { category_id: 4, path: 'Other' } }
+  eq(I.pendingFor(pend, g, true), { category_id: 4, path: 'Other' })
+  eq(I.applyPlan(g, { category_id: 4, path: 'Other' }, {}),
+     { ok: true, ids: [10, 11, 12, 13], category_id: 4, path: 'Other' })
+  eq(I.applyPlan(g, null, {}).ok, false)
+  eq(I.applyPlan(g, null, {}).message, 'no category yet: press 1, 2 or 3, or c to pick one')
+  const none = I.setGroupTicks({}, I.gkey(g), g, false)
+  eq(I.applyPlan(g, { category_id: 4, path: 'Other' }, none).message,
+     'no rows ticked: Space ticks a row, a ticks all')
+  eq(I.applyPlan(g, { category_id: 4, path: 'Other' }, I.toggleTick({}, I.gkey(g), 12)).ids, [10, 11, 13])
+})
+
+test('group lines: header, date span, row line, chips from the group options', () => {
+  eq(I.groupLine(grp()), 'NETFLIX  \u00b7  41 rows  \u00b7  -$635.12  \u00b7  2026-09-02 to 2026-11-18')
+  eq(I.groupLine(grp({ group_count: 1, group_ids: [10], group_date_min: '2026-11-02', group_date_max: '2026-11-02' })),
+     'NETFLIX  \u00b7  1 row  \u00b7  -$635.12  \u00b7  2026-11-02')
+  eq(I.rowLine({ date: '2026-11-02', payee: 'AMAZON', amount: -24.99, account: 'Chase' }),
+     '2026-11-02  AMAZON  -$24.99  Chase')
+  eq(I.optionChips(grp({ options: [{ category_id: 3, path: 'Bills', confidence: 0.9, source: 'rule' }] }).options)
+       .map(c => c.n), [1])
+})
+
+test('items: groups, expanded rows and "more", cursor after a group leaves', () => {
+  const a = grp()
+  const b = grp({ id: 20, group_key: 'hulu', payee: 'HULU', group_ids: [20, 21], group_count: 2 })
+  const groups = [a, b]
+  const ka = I.gkey(a)
+  eq(I.groupItems(groups, {}, {}, {}).map(i => i.key), ['g:netflix|in', 'g:hulu|in'])
+  const rowsA = [{ id: 10, payee: 'NETFLIX' }, { id: 11, payee: 'NETFLIX' }]
+  const items = I.groupItems(groups, { [ka]: true }, { [ka]: rowsA }, {})
+  eq(items.map(i => i.key),
+     ['g:netflix|in', 'r:netflix|in:10', 'r:netflix|in:11', 'm:netflix|in', 'g:hulu|in'])
+  eq(items[3].left, 2)
+  eq(I.groupItems(groups, { [ka]: true }, {}, { [ka]: true })[1].loading, true)
+  // the cursor on the removed group's header lands on the next group's header
+  const after = I.groupItems([b], {}, {}, {})
+  eq(I.cursorIndex(after, 'g:netflix|in', 0), 0)
+  eq(after[I.cursorIndex(after, 'g:netflix|in', 0)].key, 'g:hulu|in')
+  // a row that vanished falls back to a header near its position
+  eq(I.cursorIndex(items, 'r:netflix|in:99', 1), 0)
+  eq(I.cursorIndex(items, 'm:gone|in', 3), 4)
+  eq(I.cursorIndex(items, 'g:hulu|in', 0), 4)
+  eq(I.cursorIndex([], 'g:x', 0), 0)
+  eq(I.groupStep(items, 0, 1), 4)
+  eq(I.groupStep(items, 4, 1), 4)
+  eq(I.groupStep(items, 2, -1), 0)
+  eq(I.groupStep(items, 0, -1), 0)
+  eq(I.removeGroup(groups, ka).map(I.gkey), ['hulu|in'])
+  eq(I.groupIndexOf(groups, 'hulu|in'), 1)
+  eq(I.groupIndexOf(groups, 'x|in'), -1)
+  eq(I.pruneTo({ [ka]: 1, 'x|in': 2 }, [ka]), { [ka]: 1 })
+  eq(I.anyExpanded({ [ka]: true }), true)
+  eq(I.anyExpanded({}), false)
 })
 
 test('dashboard title joins the range', () => {

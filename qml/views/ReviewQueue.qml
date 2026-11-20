@@ -5,27 +5,39 @@ import qs.Commons as Commons
 import "../keys/Keymap.js" as Keymap
 import "../state/Insight.js" as Insight
 
-// Review queue (R): one uncategorized row at a time, with its suggestions as numbered chips 1/2/3.
-// Accepting (1-3), the category picker (c) and the preview (C, bootstrap mode only) are AppShell's;
-// this view renders the state it is given and forwards its keys as act(id). Owns the keyboard while open.
+// Review queue (R): one entry per payee group of uncategorized rows. A group shows its payee,
+// count, total and date span, the pending category (y applies it to the ticked rows), its numbered
+// suggestion chips (1/2/3) and how many rows will be categorized. Enter shows the group's rows so
+// single rows can be ticked (Space). Movement and the cursor are this view's; every other key is
+// forwarded as act(id). AppShell owns the requests and every piece of state.
 FocusScope {
   id: root
 
   property bool open: false
-  property var rows: []               // loaded GET /review rows, in queue order
+  property var groups: []             // loaded GET /review rows, one per payee group, in queue order
   property string mode: ""            // "suggest" | "frequency" | "" (not loaded yet)
-  property int remaining: 0           // uncategorized rows the queue still holds
+  property int remaining: 0           // groups the queue still holds
   property int startRemaining: 0      // remaining when the queue was opened (progress)
-  property int cursor: 0
   property bool loading: false
   property string error: ""           // the backend's error envelope, shown verbatim
   property var suggState: null        // {enabled, reason, accuracy} from /suggest/accuracy, or null (not loaded)
   property string suggError: ""       // the backend's error envelope for the accuracy request, or ""
+  property var pending: ({})          // group key -> {category_id, path}
+  property var unticked: ({})         // group key -> {id: true}
+  property var expanded: ({})         // group key -> true
+  property var rowsByKey: ({})        // group key -> expanded rows loaded so far
+  property var loadingByKey: ({})     // group key -> true while its rows load
 
-  readonly property var row: cursor >= 0 && cursor < rows.length ? rows[cursor] : null
-  readonly property var chips: row ? Insight.optionChips(row.options) : []
+  readonly property bool suggOn: suggState !== null && suggState.enabled === true
+  // Flat list of headers, rows and "more" entries (Insight.groupItems).
+  readonly property var items: Insight.groupItems(groups, expanded, rowsByKey, loadingByKey)
+  property int cursorIdx: 0
+  property string cursorKey: ""
+  readonly property var cur: cursorIdx >= 0 && cursorIdx < items.length ? items[cursorIdx] : null
+  readonly property var curGroup: cur ? cur.g : null
+  readonly property int groupIdx: curGroup ? Insight.groupIndexOf(groups, cur.gkey) : 0
   readonly property var head: Insight.reviewHeader({ mode: mode, acc: suggState, remaining: remaining,
-                                                     index: cursor, loaded: rows.length })
+                                                     index: groupIdx, loaded: groups.length })
   readonly property real progress: Insight.reviewProgress(startRemaining, remaining)
   readonly property color warnColor: Commons.Color.urgent
 
@@ -36,6 +48,32 @@ FocusScope {
 
   // Takes the keyboard (AppShell calls this when the queue opens or an overlay above it closes).
   function focusKeys() { keyCatcher.forceActiveFocus() }
+
+  // The cursor keeps its key while the items change; a group that left lands on the next one.
+  onItemsChanged: {
+    cursorIdx = Insight.cursorIndex(items, cursorKey, cursorIdx)
+    cursorKey = items.length > 0 ? items[cursorIdx].key : ""
+  }
+  onOpenChanged: if (open) { cursorKey = ""; cursorIdx = 0 }
+
+  function moveTo(i) {
+    if (items.length === 0) return
+    cursorIdx = Insight.clamp(i, items.length)
+    cursorKey = items[cursorIdx].key
+    list.positionViewAtIndex(cursorIdx, ListView.Contain)
+    // near the end of the loaded groups: AppShell fetches the next page (it checks there is one)
+    if (cur && cur.kind === "group" && groupIdx >= groups.length - 2) act("review.more")
+  }
+
+  // Movement is handled here; returns false for the other ids.
+  function move(id) {
+    if (id === "review.down") moveTo(cursorIdx + 1)
+    else if (id === "review.up") moveTo(cursorIdx - 1)
+    else if (id === "review.skip") moveTo(Insight.groupStep(items, cursorIdx, 1))
+    else if (id === "review.prev") moveTo(Insight.groupStep(items, cursorIdx, -1))
+    else return false
+    return true
+  }
 
   // Swallows clicks so the table underneath does not react.
   MouseArea { anchors.fill: parent }
@@ -57,7 +95,7 @@ FocusScope {
       var id = Keymap.resolve(["review"], Keymap.token(e))
       if (id === "") return
       e.accepted = true
-      root.act(id)
+      if (!root.move(id)) root.act(id)
     }
   }
 
@@ -78,7 +116,7 @@ FocusScope {
       }
       Item { Layout.fillWidth: true }
       Text {
-        text: root.remaining > 0 ? Insight.fmtN(root.remaining) + " to review" : ""
+        text: root.remaining > 0 ? Insight.fmtN(root.remaining) + (root.remaining === 1 ? " group" : " groups") + " to review" : ""
         color: Commons.Color.muted
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
@@ -124,105 +162,150 @@ FocusScope {
       font.pixelSize: Style.font.bodySmall
     }
 
-    // The current row.
-    Rectangle {
+    // The groups, their expanded rows and the "more" lines.
+    ListView {
+      id: list
       Layout.fillWidth: true
       Layout.fillHeight: true
-      visible: root.row !== null
-      color: "transparent"
-      border.width: Style.space(1)
-      border.color: Commons.Color.menu.border
-      radius: Style.cornerRadius
+      visible: root.items.length > 0
+      clip: true
+      spacing: Style.spacing.xs
+      model: root.items
+      boundsBehavior: Flickable.StopAtBounds
+      currentIndex: root.cursorIdx
 
-      ColumnLayout {
-        anchors.fill: parent
-        anchors.margins: Style.spacing.xl
-        spacing: Style.spacing.md
+      delegate: Rectangle {
+        id: entry
+        required property var modelData
+        required property int index
+        readonly property bool isCursor: index === root.cursorIdx
+        width: list.width
+        height: entry.modelData.kind === "group" ? body.implicitHeight + Style.spacing.md * 2
+              : Style.space(20)
+        color: isCursor ? Qt.alpha(Commons.Color.accent, 0.10) : "transparent"
+        radius: Style.cornerRadius
 
-        Text {
-          Layout.fillWidth: true
-          text: root.row ? String(root.row.payee) : ""
-          color: Commons.Color.menu.text
-          font.family: Style.font.family
-          font.pixelSize: Style.font.subtitle
-          font.bold: true
-          elide: Text.ElideRight
-        }
-        Text {
-          Layout.fillWidth: true
-          text: root.row ? String(root.row.date) + "   " + String(root.row.account) + "   "
-                            + Insight.moneyCents(root.row.amount) : ""
-          color: Commons.Color.menu.text
-          font.family: Style.font.family
-          font.pixelSize: Style.font.body
-        }
-        Text {
-          Layout.fillWidth: true
-          text: root.row ? Insight.fmtN(root.row.payee_count) + " uncategorized rows from this payee" : ""
-          color: Commons.Color.muted
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
-        }
+        // A group header: the card with payee, pending category, chips and the tick count.
+        ColumnLayout {
+          id: body
+          visible: entry.modelData.kind === "group"
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: parent.top
+          anchors.margins: Style.spacing.md
+          spacing: Style.spacing.xs
 
-        // Numbered chips: 1 accepts the first, 2 the second, 3 the third.
-        Repeater {
-          model: root.chips
-          delegate: Rectangle {
-            required property var modelData
+          readonly property var pend: entry.modelData.kind === "group"
+              ? Insight.pendingFor(root.pending, entry.modelData.g, root.suggOn) : null
+          readonly property var chipList: entry.modelData.kind === "group"
+              ? Insight.optionChips(entry.modelData.g.options) : []
+
+          Text {
             Layout.fillWidth: true
-            implicitHeight: chipText.implicitHeight + Style.spacing.md * 2
-            radius: Style.cornerRadius
-            color: Qt.alpha(Commons.Color.accent, 0.12)
-            border.width: Style.space(1)
-            border.color: Commons.Color.accent
-            RowLayout {
-              anchors.fill: parent
-              anchors.margins: Style.spacing.md
-              spacing: Style.spacing.md
-              Text {
-                text: String(modelData.n)
-                color: Commons.Color.accent
-                font.family: Style.font.family
-                font.pixelSize: Style.font.body
-                font.bold: true
-              }
-              Text {
-                id: chipText
-                Layout.fillWidth: true
-                text: modelData.path + "   " + Insight.pct(modelData.confidence) + "   " + modelData.source
-                color: Commons.Color.menu.text
-                font.family: Style.font.family
-                font.pixelSize: Style.font.body
-                elide: Text.ElideRight
+            text: entry.modelData.kind === "group" ? Insight.groupLine(entry.modelData.g) : ""
+            color: Commons.Color.menu.text
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+            elide: Text.ElideRight
+          }
+          Text {
+            Layout.fillWidth: true
+            text: Insight.pendingText(body.pend)
+            color: body.pend ? Commons.Color.accent : root.warnColor
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+            elide: Text.ElideRight
+          }
+          // Numbered suggestion chips; the pending one is filled.
+          Flow {
+            Layout.fillWidth: true
+            spacing: Style.spacing.md
+            visible: body.chipList.length > 0
+            Repeater {
+              model: body.chipList
+              delegate: Rectangle {
+                required property var modelData
+                readonly property bool isPending: body.pend !== null
+                                                  && Number(body.pend.category_id) === Number(modelData.category_id)
+                implicitWidth: chipLine.implicitWidth + Style.spacing.md * 2
+                implicitHeight: chipLine.implicitHeight + Style.spacing.xs * 2
+                radius: Style.cornerRadius
+                color: isPending ? Commons.Color.accent : Qt.alpha(Commons.Color.accent, 0.12)
+                border.width: Style.space(1)
+                border.color: Commons.Color.accent
+                Text {
+                  id: chipLine
+                  anchors.centerIn: parent
+                  text: modelData.n + "  " + modelData.text
+                  color: parent.isPending ? Commons.Color.menu.background : Commons.Color.menu.text
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.bodySmall
+                }
               }
             }
           }
+          Text {
+            Layout.fillWidth: true
+            visible: entry.modelData.kind === "group" && body.chipList.length === 0
+            text: "No suggestion for this payee. c picks a category."
+            color: Commons.Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+          }
+          Text {
+            Layout.fillWidth: true
+            text: entry.modelData.kind === "group"
+                ? Insight.willText(entry.modelData.g, root.unticked) + "      "
+                  + (root.expanded[entry.modelData.gkey] ? "Enter hides the rows" : "Enter shows the rows")
+                : ""
+            color: Commons.Color.menu.text
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+          }
         }
+
+        // A transaction of an expanded group: [x] ticked, [ ] not.
         Text {
-          Layout.fillWidth: true
-          visible: root.row !== null && root.chips.length === 0
-          text: "No suggestion for this row. s skips it, c picks a category."
+          visible: entry.modelData.kind === "row"
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.leftMargin: Style.spacing.xl
+          anchors.rightMargin: Style.spacing.md
+          text: entry.modelData.kind === "row"
+              ? (Insight.isTicked(root.unticked, entry.modelData.gkey, Number(entry.modelData.row.id)) ? "[x]  " : "[ ]  ")
+                + Insight.rowLine(entry.modelData.row)
+              : ""
+          color: Commons.Color.menu.text
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          elide: Text.ElideRight
+        }
+
+        // The rest of an expanded group: Enter loads the next page.
+        Text {
+          visible: entry.modelData.kind === "more"
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.leftMargin: Style.spacing.xl
+          text: entry.modelData.kind === "more"
+              ? (entry.modelData.loading ? "loading rows..."
+                 : "Enter loads " + Insight.fmtN(Math.min(entry.modelData.left, Insight.REVIEW_PAGE))
+                   + " more (" + Insight.fmtN(entry.modelData.left) + " not shown yet)")
+              : ""
           color: Commons.Color.muted
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
-          wrapMode: Text.WordWrap
         }
-        Text {
-          Layout.fillWidth: true
-          visible: root.row !== null && root.mode === "frequency"
-          text: "C previews this whole payee group and clears it in one step."
-          color: Commons.Color.muted
-          font.family: Style.font.family
-          font.pixelSize: Style.font.bodySmall
-          wrapMode: Text.WordWrap
-        }
-        Item { Layout.fillHeight: true }
       }
     }
 
     Text {
       Layout.fillWidth: true
-      visible: root.row === null
+      Layout.fillHeight: true
+      visible: root.items.length === 0
       text: root.loading ? "loading..."
           : root.error !== "" ? root.error
           : "Queue is empty: nothing uncategorized."
@@ -234,7 +317,7 @@ FocusScope {
 
     Text {
       Layout.fillWidth: true
-      visible: root.row !== null && root.error !== ""
+      visible: root.items.length > 0 && root.error !== ""
       text: root.error
       color: root.warnColor
       font.family: Style.font.family
@@ -244,11 +327,11 @@ FocusScope {
 
     Text {
       Layout.fillWidth: true
-      text: "1 2 3 accept   c categorize   C preview payee group (bootstrap)   s skip   Backspace back   u undo   Esc leave"
+      text: "j/k move   1 2 3 suggestion   c category   C preview   y apply   Space tick   a all   n none   Enter rows   s skip   Backspace back   u undo   Esc collapse, then leave"
       color: Commons.Color.muted
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
-      elide: Text.ElideRight
+      wrapMode: Text.WordWrap
     }
   }
 }

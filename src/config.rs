@@ -21,6 +21,24 @@ pub struct Settings {
     pub ui: UiSettings,
     pub mcp: McpSettings,
     pub categories: CategorySettings,
+    pub mail: MailSettings,
+    pub reports: ReportsSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MailSettings {
+    /// Path to the Google OAuth "installed app" client JSON. Only the path lives here; the client secret is read
+    /// from that file and never copied into settings, logs or errors.
+    pub client_secret_file: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ReportsSettings {
+    /// Addresses reports may be sent to, in addition to the authenticated Gmail sender (which is always allowed).
+    /// Empty = only the sender.
+    pub allowed_recipients: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -58,7 +76,19 @@ impl Default for Settings {
             ui: UiSettings::default(),
             mcp: McpSettings::default(),
             categories: CategorySettings::default(),
+            mail: MailSettings::default(),
+            reports: ReportsSettings::default(),
         }
+    }
+}
+impl Default for MailSettings {
+    fn default() -> Self {
+        MailSettings { client_secret_file: String::new() }
+    }
+}
+impl Default for ReportsSettings {
+    fn default() -> Self {
+        ReportsSettings { allowed_recipients: Vec::new() }
     }
 }
 impl Default for CategorySettings {

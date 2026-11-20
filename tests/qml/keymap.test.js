@@ -52,6 +52,26 @@ test('D and R open the overlays from the table, and the overlays own their keys'
   assert.equal(K.resolve(['review'], 'Backspace'), 'review.prev')
   assert.equal(K.resolve(['review'], 'u'), 'review.undo')
   assert.equal(K.resolve(['review'], 'Esc'), 'review.close')
+  assert.equal(K.resolve(['review'], 'y'), 'review.apply')
+  assert.equal(K.resolve(['review'], 'Space'), 'review.tick')
+  assert.equal(K.resolve(['review'], 'a'), 'review.all')
+  assert.equal(K.resolve(['review'], 'n'), 'review.none')
+  assert.equal(K.resolve(['review'], 'Enter'), 'review.expand')
+  assert.equal(K.resolve(['review'], 'j'), 'review.down')
+  assert.equal(K.resolve(['review'], 'Down'), 'review.down')
+  assert.equal(K.resolve(['review'], 'k'), 'review.up')
+  assert.equal(K.resolve(['review'], 'Up'), 'review.up')
+})
+
+test('review: every key id is bound once and the review scope has no duplicate keys', () => {
+  const seen = {}
+  for (const b of K.BINDINGS.filter(b => b.scope === 'review')) {
+    for (const key of b.keys) {
+      assert.ok(!seen[key], 'review key ' + key + ' bound twice (' + seen[key] + ', ' + b.id + ')')
+      seen[key] = b.id
+    }
+  }
+  assert.ok(K.BINDINGS.some(b => b.id === 'review.apply'))
 })
 
 test('Ctrl-y accepts the suggestion from the detail pane only', () => {

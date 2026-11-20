@@ -66,3 +66,17 @@ every cache refresh (build lazily on first request; must stay < 50 ms for 50k ro
    smart-categorize on that row so a payee group is cleared in one step.
  - Detail pane: when suggestions are enabled, show the top option as a ghost chip; `Tab` while the table is focused... (do NOT steal Tab:
    it cycles panes) use `Ctrl-y` to accept. New overlays go through AppShell `restoreFocus()` and the overlayOpen list.
+
+## Amendment (review queue is group-based; user decision 2026-11-20)
+The review queue shows ONE ENTRY PER PAYEE GROUP (normalized payee + sign, uncategorized rows only), not one per row.
+`GET /review` rows gain: `group_key` (normalized payee), `group_count`, `group_total` (sum of amount, positive = out),
+`group_ids` (all uncategorized row ids of the group, date desc, capped at 500), `group_date_min`, `group_date_max`.
+The row fields (`id`,`date`,`payee`,`amount`,`account`,`payee_count`,`options`) describe the group's most recent row (the
+representative). `options` are computed for the representative. `remaining` counts groups. Order: `frequency` mode by
+group_count desc then most recent date; `suggest` mode by top-option confidence desc. Group rows are expanded in the UI via
+`POST /smart/rows {ids}` (<=500).
+Review keys (replaces direct 1/2/3-accept): `1`/`2`/`3` or `c` SELECT the pending category for the group (default pending =
+top option when suggestions are enabled, else none); `y` APPLIES the pending category to the ticked rows via
+`POST /transactions/categorize` (undoable, `u`); `Enter` expands the group's rows (details, paged by 50, like the Phase 4
+preview) where `Space` tags/untags individual rows (all ticked by default), `a` all, `n` none; `Esc` collapses, then leaves;
+`s` skip group, `Backspace` previous, `C` = full Phase 4 preview for the representative. After `y` the queue advances.

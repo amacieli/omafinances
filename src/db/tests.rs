@@ -56,7 +56,7 @@ fn migrate_backup_seed_status_txns() {
     assert_eq!(db.status().unwrap().categories, 0);
 
     let rep = db.migrate().unwrap();
-    assert_eq!((rep.from, rep.to), (0, 2));
+    assert_eq!((rep.from, rep.to), (0, 3));
     let b = rep.backup.expect("backup");
     assert_eq!(std::fs::metadata(&b).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(std::fs::metadata(b.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
@@ -64,12 +64,12 @@ fn migrate_backup_seed_status_txns() {
     // backup stays encrypted: opens with key, not without
     assert!(Db::open(&b, "bad").is_err());
     assert!(Db::open(&b, PASS).is_ok());
-    assert_eq!(count(&db, "PRAGMA user_version"), 2);
+    assert_eq!(count(&db, "PRAGMA user_version"), 3);
 
     // idempotent
     let n_cat = count(&db, "SELECT count(*) FROM category");
     let rep2 = db.migrate().unwrap();
-    assert_eq!((rep2.from, rep2.to), (2, 2));
+    assert_eq!((rep2.from, rep2.to), (3, 3));
     assert!(rep2.backup.is_none());
     assert_eq!(std::fs::read_dir(dir.join("backups")).unwrap().count(), 1);
     assert_eq!(count(&db, "SELECT count(*) FROM category"), n_cat);
@@ -90,7 +90,7 @@ fn migrate_backup_seed_status_txns() {
 
     // status
     let st = db.status().unwrap();
-    assert_eq!((st.schema_version, st.transactions, st.accounts, st.categories), (2, 4, 2, 5));
+    assert_eq!((st.schema_version, st.transactions, st.accounts, st.categories), (3, 4, 2, 5));
     assert_eq!(st.last_txn_date.as_deref(), Some("2026-01-03"));
     assert_eq!(st.last_sync.as_deref(), Some("2026-01-04 10:00"));
 

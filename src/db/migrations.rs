@@ -11,6 +11,7 @@ pub type MigrationFn = fn(&Transaction) -> Result<()>;
 pub const MIGRATIONS: &[(i64, &str, MigrationFn)] = &[
     (1, "category tree, journal, rules, views", v1),
     (2, "undo/redo: superseded flag on change_batch", v2),
+    (3, "reports: saved reports and run log", v3),
 ];
 
 pub fn latest_version() -> i64 {
@@ -98,6 +99,37 @@ fn v2(tx: &Transaction) -> Result<()> {
         tx.execute_batch("ALTER TABLE change_batch ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0;")?;
     }
     tx.execute_batch("CREATE INDEX IF NOT EXISTS idx_change_batch_undo ON change_batch(undone_at, superseded);")?;
+    Ok(())
+}
+
+/// Scheduled reports and their run log. `trigger` is quoted because it is a SQL keyword.
+fn v3(tx: &Transaction) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS report (
+            id INTEGER PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            query TEXT NOT NULL DEFAULT '',
+            shape TEXT NOT NULL,
+            period TEXT NOT NULL,
+            schedule_json TEXT NOT NULL,
+            recipients_json TEXT NOT NULL,
+            redact INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS report_run (
+            id INTEGER PRIMARY KEY,
+            report_id INTEGER NOT NULL REFERENCES report(id) ON DELETE CASCADE,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL,
+            detail TEXT,
+            rows INTEGER,
+            message_id TEXT,
+            \"trigger\" TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_report_run_report ON report_run(report_id, id);",
+    )?;
     Ok(())
 }
 

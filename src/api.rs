@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 mod edit;
 mod insight;
+mod report;
 mod slash;
 mod smart;
 
@@ -42,16 +43,34 @@ pub struct AppState {
     history_lock: Mutex<()>,
     /// Phase 5 derived model for the current cache; cleared (under the cache write lock) on every refresh.
     insight: Mutex<Option<Arc<crate::insight::Model>>>,
+    /// Mailer and systemd for the report routes. The default uses real Gmail and `systemctl --user`.
+    pub reports: crate::report::ReportHost,
 }
 
 impl AppState {
     pub fn new(settings: Settings, db: Result<Db, String>, version: &'static str) -> AppState {
-        AppState { settings, db, version, cache: RwLock::new(None), config_dir: None, today_override: None, history_lock: Mutex::new(()), insight: Mutex::new(None) }
+        AppState {
+            settings,
+            db,
+            version,
+            cache: RwLock::new(None),
+            config_dir: None,
+            today_override: None,
+            history_lock: Mutex::new(()),
+            insight: Mutex::new(None),
+            reports: crate::report::ReportHost::default(),
+        }
     }
 
     /// Set the directory that holds the search history file.
     pub fn with_config_dir(mut self, dir: PathBuf) -> AppState {
         self.config_dir = Some(dir);
+        self
+    }
+
+    /// Replace the report mailer and systemd (tests); the default is the real Gmail mailer and systemctl.
+    pub fn with_reports(mut self, host: crate::report::ReportHost) -> AppState {
+        self.reports = host;
         self
     }
 
@@ -117,6 +136,11 @@ pub fn route_name(path: &str) -> &'static str {
         Route::InsightsAnomalies => "insights_anomalies",
         Route::InsightsTransfers => "insights_transfers",
         Route::Dashboard => "dashboard",
+        Route::Reports => "reports",
+        Route::Report(_) => "report",
+        Route::ReportAction(_, _) => "report_action",
+        Route::SchedulePreview => "schedule_preview",
+        Route::MailStatus => "mail_status",
         Route::Unknown => "unknown",
     }
 }
@@ -150,6 +174,11 @@ enum Route<'a> {
     InsightsAnomalies,
     InsightsTransfers,
     Dashboard,
+    Reports,
+    Report(&'a str),
+    ReportAction(&'a str, &'a str),
+    SchedulePreview,
+    MailStatus,
     Unknown,
 }
 
@@ -180,6 +209,9 @@ fn route(path: &str) -> Route<'_> {
         "/insights/anomalies" => Route::InsightsAnomalies,
         "/insights/transfers" => Route::InsightsTransfers,
         "/dashboard" => Route::Dashboard,
+        "/reports" => Route::Reports,
+        "/schedule/preview" => Route::SchedulePreview,
+        "/mail/status" => Route::MailStatus,
         _ => {
             if let Some(rest) = path.strip_prefix("/transactions/") {
                 if !rest.is_empty() && !rest.contains('/') {
@@ -195,6 +227,15 @@ fn route(path: &str) -> Route<'_> {
             } else if let Some(rest) = path.strip_prefix("/views/") {
                 if !rest.is_empty() && !rest.contains('/') {
                     return Route::View(rest);
+                }
+            } else if let Some(rest) = path.strip_prefix("/reports/") {
+                if let Some((id, action)) = rest.split_once('/') {
+                    let known = matches!(action, "preview" | "send-test" | "enable" | "runs");
+                    if !id.is_empty() && !id.contains('/') && known {
+                        return Route::ReportAction(id, action);
+                    }
+                } else if !rest.is_empty() {
+                    return Route::Report(rest);
                 }
             }
             Route::Unknown
@@ -234,6 +275,10 @@ pub fn handle_body(state: &AppState, method: &str, path: &str, query: &str, body
         Route::Journal => &["GET"],
         Route::Views | Route::History => &["GET", "POST"],
         Route::View(_) => &["DELETE"],
+        Route::Reports => &["GET", "POST"],
+        Route::Report(_) => &["PUT", "DELETE"],
+        Route::ReportAction(_, "runs") => &["GET"],
+        Route::ReportAction(_, _) => &["POST"],
         _ => &["GET"],
     };
     if !allowed.contains(&method) {
@@ -274,6 +319,12 @@ pub fn handle_body(state: &AppState, method: &str, path: &str, query: &str, body
         Route::InsightsAnomalies => insight::anomalies(state, query),
         Route::InsightsTransfers => insight::transfers(state, query),
         Route::Dashboard => insight::dashboard(state, query),
+        Route::Reports if method == "POST" => report::create(state, body),
+        Route::Reports => report::list(state),
+        Route::Report(id) => report::one(state, id, method, body),
+        Route::ReportAction(id, action) => report::action(state, id, action, query, body),
+        Route::SchedulePreview => report::schedule_preview(query),
+        Route::MailStatus => report::mail_status(state),
         Route::Unknown => error(404, "not found"),
     }
 }

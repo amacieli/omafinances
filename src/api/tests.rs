@@ -1138,6 +1138,37 @@ fn insight_state() -> (std::path::PathBuf, AppState, i64, i64) {
 }
 
 #[test]
+fn review_groups_through_the_api() {
+    let (dir, s, paint, _job) = insight_state();
+    let (code, rv) = get_q(&s, "/review", "limit=50");
+    assert_eq!(code, 200, "{rv}");
+    assert_eq!(rv["remaining"], 7);
+    let row = |key: &str, income: bool| -> Value {
+        rv["rows"].as_array().unwrap().iter().find(|r| r["group_key"] == key && (r["amount"].as_f64().unwrap() < 0.0) == income).cloned().expect(key)
+    };
+    let hw = row("hardware depot", false);
+    assert_eq!((hw["id"].as_i64(), hw["group_count"].as_i64(), hw["payee_count"].as_i64()), (Some(313), Some(3), Some(3)));
+    assert_eq!(hw["group_ids"], json!([313, 301, 300]));
+    assert_eq!(hw["group_total"], 138.75);
+    assert_eq!((hw["group_date_min"].as_str(), hw["group_date_max"].as_str()), (Some("2026-11-16"), Some("2026-11-18")));
+    let mm_in = row("move money", true);
+    assert_eq!((mm_in["id"].as_i64(), mm_in["group_count"].as_i64(), mm_in["group_total"].as_f64()), (Some(311), Some(1), Some(-250.0)));
+    assert_eq!(row("move money", false)["id"], 310);
+    // every uncategorized row belongs to exactly one group; the groups' ids cover the 9 uncategorized rows of the fixture
+    let mut all: Vec<i64> = rv["rows"].as_array().unwrap().iter().flat_map(|r| r["group_ids"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap())).collect();
+    all.sort();
+    assert_eq!(all, vec![2, 3, 4, 300, 301, 310, 311, 312, 313]);
+
+    // accepting every Hardware Depot row removes that group from the queue
+    let (code, b) = send(&s, "POST", "/transactions/categorize", &format!(r#"{{"ids":[300,301,313],"category_id":{paint}}}"#));
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(get_q(&s, "/review", "limit=50").1["remaining"], 6);
+    assert_eq!(send(&s, "POST", "/undo", "").0, 200);
+    assert_eq!(get_q(&s, "/review", "limit=50").1["remaining"], 7);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn insight_bad_params_are_400() {
     let (dir, s, _, _) = insight_state();
     for q in ["limit=0", "limit=201", "limit=x", "offset=-1", "offset=x", "foo=1", "limit=5&limit=6", "limit"] {
@@ -1191,7 +1222,7 @@ fn insights_end_to_end_through_the_real_handlers() {
     let (code, rv) = get_q(&s, "/review", "limit=3&offset=0");
     assert_eq!(code, 200, "{rv}");
     assert_eq!(rv["mode"], "suggest");
-    assert_eq!(rv["remaining"], 9, "2,3,4,300,301,310,311,312,313");
+    assert_eq!(rv["remaining"], 7, "groups: B, (no payee), D, Hardware Depot, Move Money out, Move Money in, Brand New Gadget");
     assert_eq!(rv["rows"].as_array().unwrap().len(), 3);
     assert!(rv["rows"][0]["options"].is_array() && rv["rows"][0]["payee_count"].is_i64());
     let (_, rv2) = get_q(&s, "/review", "limit=3&offset=3");
@@ -1234,7 +1265,7 @@ fn insights_end_to_end_through_the_real_handlers() {
     assert_eq!(get(&s, "/suggest/accuracy").1["accuracy"]["labeled"], 38, "model retrained on the refreshed cache");
     let (_, sg2) = send(&s, "POST", "/suggest", r#"{"ids":[300,301]}"#);
     assert_eq!(sg2["suggestions"].as_array().unwrap().len(), 1);
-    assert_eq!(get_q(&s, "/review", "limit=1").1["remaining"], 8);
+    assert_eq!(get_q(&s, "/review", "limit=1").1["remaining"], 7, "Hardware Depot still has two uncategorized rows");
     assert_eq!(send(&s, "POST", "/undo", "").0, 200);
     assert_eq!(get(&s, "/suggest/accuracy").1["accuracy"]["labeled"], 37);
 

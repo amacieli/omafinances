@@ -127,17 +127,23 @@ FocusScope {
   property int dashGen: 0
   // ------------------------------------------------------------------ Phase 5: review queue (R) and suggestions
   property bool reviewOpen: false
-  property var reviewRows: []             // loaded GET /review rows, in queue order
+  property var reviewRows: []             // loaded GET /review rows: one per payee group, in queue order
   property string reviewMode: ""          // "suggest" | "frequency"
-  property int reviewRemaining: 0
+  property int reviewRemaining: 0         // groups the queue still holds
   property int reviewStart: 0             // remaining when the queue was opened (progress)
-  property int reviewCursor: 0
-  property int reviewLastPage: 0          // size of the last GET /review page (more rows wait when it was full)
+  property int reviewLastPage: 0          // size of the last GET /review page (more groups wait when it was full)
   property bool reviewLoading: false
   property string reviewError: ""
   property int reviewGen: 0               // bumped per reload and on close; stale replies are dropped
-  property bool reviewDirty: false        // a row was accepted: the table reloads when the queue closes
-  property var reviewInFlight: ({})       // transaction id -> true while its accept request runs
+  property bool reviewDirty: false        // a group was applied: the table reloads when the queue closes
+  property var reviewInFlight: ({})       // group key -> true while its apply request runs
+  property var reviewPending: ({})        // group key -> {category_id, path}: what y applies
+  property var reviewUnticked: ({})       // group key -> {id: true} for rows not ticked (all ticked by default)
+  property var reviewExpanded: ({})       // group key -> true: Enter shows its rows
+  property var reviewRowsByKey: ({})      // group key -> expanded rows loaded so far (POST /smart/rows)
+  property var reviewRowsLoading: ({})    // group key -> true while its rows load
+  property bool reviewPickFlow: false     // the next category the picker returns is the pending one
+  property string reviewPickKey: ""       // the group that pick is for
   property var suggState: null            // {enabled, reason, accuracy} from /suggest/accuracy or POST /suggest; null = not loaded
   property string suggError: ""           // the backend's error envelope for the last suggestion request
   property var detailSugg: null           // the /suggest row for the detail pane's transaction, or null
@@ -747,6 +753,7 @@ FocusScope {
   }
 
   function onPickerCancelled() {
+    reviewPickFlow = false
     if (isCategoryCtx(pickerCtx)) return
     if (pickerCtx === "views") return
     if (pickerCtx === "viewConfirm") { if (viewConfirmFrom === "views") openViewsPicker(); return }
@@ -850,7 +857,7 @@ FocusScope {
   function afterChange() {
     loadFacets()
     reloadRows(cursor)
-    if (reviewOpen) { reviewReload(true); loadSuggestAccuracy() }
+    if (reviewOpen) { reviewReload(false); loadSuggestAccuracy() }
   }
 
   // A category chip shows the category's current name (it may have been renamed in the manager).
@@ -951,6 +958,7 @@ FocusScope {
     }
     catIds = list
     smartFlow = !!withPreview
+    reviewPickFlow = false
     openCategorize()
   }
 
@@ -986,7 +994,8 @@ FocusScope {
 
   // The category is chosen: a plain assignment for c, the preview for C.
   function finishCategorize(ids, catId) {
-    if (smartFlow) smartStart(catId)
+    if (reviewPickFlow) reviewPendingPick(catId)
+    else if (smartFlow) smartStart(catId)
     else assignCategory(ids, catId)
   }
 
@@ -1210,6 +1219,7 @@ FocusScope {
   function categoryPickerChosen(ctx, key) {
     if (ctx === "categorize") {
       if (key === "new") openNewCategory()
+      else if (reviewPickFlow) reviewPendingPick(key === "none" ? null : Number(key))
       else if (smartFlow) smartStart(Number(key))
       else assignCategory(catIds, key === "none" ? null : Number(key))
       return true
@@ -2029,30 +2039,52 @@ FocusScope {
     else if (id === "dash.transfers") { dashTransfers = !dashTransfers; loadDashboard() }
   }
 
-  // ---- review queue
+  // ---- review queue: one entry per payee group (the amendment in docs/PHASE5_CONTRACT.md).
+  // y categorizes the ticked rows of the group as its pending category (one undoable request); the
+  // group then leaves the queue. The view owns the cursor and movement; reviewAct handles the rest.
+  function groupAt() {
+    var it = review.cur
+    return it ? Insight.groupByKey(reviewRows, it.gkey) : null
+  }
+
+  function withoutKey(map, k) {
+    var m = Object.assign({}, map)
+    delete m[k]
+    return m
+  }
+
   function openReview() {
     if (overlayOpen) return
     reviewOpen = true
     reviewDirty = false
-    reviewCursor = 0
     reviewRows = []
     reviewError = ""
+    reviewPending = ({})
+    reviewUnticked = ({})
+    reviewExpanded = ({})
+    reviewRowsByKey = ({})
+    reviewRowsLoading = ({})
+    reviewPickFlow = false
     loadSuggestAccuracy()
-    reviewReload(false)
+    reviewReload(true)
   }
 
   function closeReview() {
     reviewOpen = false
     reviewGen++
+    reviewPickFlow = false
+    reviewRowsLoading = ({})
     if (reviewDirty) { reviewDirty = false; afterChange() }
   }
 
-  // GET /review, first page. keepCursor: the cursor keeps its place (clamped) after the reload.
-  function reviewReload(keepCursor) {
+  // GET /review: the groups, as many as are loaded already (50 at least, 200 at most). fresh: this is
+  // the first load of the queue (the progress bar starts here). Per-group state of groups that left
+  // the queue is dropped; expanded groups that stay reload their rows.
+  function reviewReload(fresh) {
     var g = ++reviewGen
-    var keep = keepCursor ? reviewCursor : 0
+    var want = Math.min(Insight.REVIEW_MAX, Math.max(Insight.REVIEW_PAGE, reviewRows.length))
     reviewLoading = true
-    Backend.request("GET", "/review?limit=" + Insight.REVIEW_PAGE + "&offset=0", function(xhr) {
+    Backend.request("GET", "/review?limit=" + want + "&offset=0", function(xhr) {
       if (g !== reviewGen) return
       reviewLoading = false
       var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
@@ -2060,14 +2092,20 @@ FocusScope {
       reviewError = ""
       reviewMode = String(j.mode || "")
       reviewRemaining = Number(j.remaining) || 0
-      if (!keepCursor) reviewStart = reviewRemaining
+      if (fresh) reviewStart = reviewRemaining
       reviewLastPage = j.rows.length
       reviewRows = j.rows
-      reviewCursor = Insight.clamp(keep, j.rows.length)
+      var keys = Insight.groupKeys(j.rows)
+      reviewPending = Insight.pruneTo(reviewPending, keys)
+      reviewUnticked = Insight.pruneTo(reviewUnticked, keys)
+      reviewExpanded = Insight.pruneTo(reviewExpanded, keys)
+      reviewRowsByKey = ({})
+      reviewRowsLoading = ({})
+      Object.keys(reviewExpanded).forEach(function(k) { reviewLoadRows(k) })
     })
   }
 
-  // The next page, appended, when the queue holds more rows than are loaded.
+  // The next page of groups, appended, when the queue holds more than are loaded.
   function reviewMore() {
     if (reviewLoading || !Insight.reviewHasMore(reviewRows.length, reviewRemaining, reviewLastPage)) return
     var g = reviewGen
@@ -2077,66 +2115,152 @@ FocusScope {
       if (g !== reviewGen) return
       reviewLoading = false
       var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
-      if (!j || !j.rows) { reviewError = envelopeText(xhr); return }
+      if (!j || !j.rows) { toast(envelopeText(xhr)); return }
       reviewLastPage = j.rows.length
       reviewRemaining = Number(j.remaining) || 0
       reviewRows = reviewRows.concat(j.rows)
     })
   }
 
-  // Skip (dir +1) or previous (dir -1). Skipping the last loaded row fetches the next page first.
-  function reviewStep(dir) {
-    if (dir > 0 && reviewCursor >= reviewRows.length - 1) reviewMore()
-    reviewCursor = dir > 0 ? Insight.reviewSkip(reviewCursor, reviewRows.length)
-                           : Insight.reviewPrev(reviewCursor, reviewRows.length)
-  }
-
-  // 1 2 3: accept the row's option n through the normal (undoable) categorize route.
-  function reviewPick(n) {
-    var row = reviewRows[reviewCursor]
-    if (!row) return
-    var opt = Insight.optionFor(row.options, n)
-    if (!opt) { toast("this row has no suggestion " + n); return }
-    reviewAssign(row, Number(opt.category_id), String(opt.path))
-  }
-
-  function reviewAssign(row, catId, path) {
-    var id = Number(row.id)
-    if (reviewInFlight[id]) return
-    var f = Object.assign({}, reviewInFlight)
-    f[id] = true
-    reviewInFlight = f
-    Backend.json("POST", "/transactions/categorize", { ids: [id], category_id: catId }, function(xhr) {
-      var g = Object.assign({}, reviewInFlight)
-      delete g[id]
-      reviewInFlight = g
+  // POST /smart/rows: the next page (50) of an expanded group's rows.
+  function reviewLoadRows(k) {
+    var grp = Insight.groupByKey(reviewRows, k)
+    if (!grp || reviewRowsLoading[k]) return
+    var have = (reviewRowsByKey[k] || []).length
+    var ids = Insight.groupPageIds(grp, have)
+    if (ids.length === 0) return
+    var g = reviewGen
+    var l = Object.assign({}, reviewRowsLoading)
+    l[k] = true
+    reviewRowsLoading = l
+    Backend.json("POST", "/smart/rows", { ids: ids }, function(xhr) {
+      if (g !== reviewGen) return
+      reviewRowsLoading = withoutKey(reviewRowsLoading, k)
       var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
-      if (!j) { toast(envelopeText(xhr)); return }
-      var at = Insight.reviewIndexOfId(reviewRows, id)
-      if (at >= 0 && at < reviewCursor) reviewCursor = reviewCursor - 1
-      reviewRows = Insight.removeRow(reviewRows, id)
-      reviewRemaining = Math.max(0, reviewRemaining - 1)
-      reviewCursor = Insight.cursorAfterRemove(reviewCursor, reviewRows.length)
-      reviewDirty = true
-      toast(String(j.label || path) + "   u to undo")
-      if (reviewRows.length < 10) reviewMore()
+      if (!j || !j.rows) { toast(envelopeText(xhr)); return }
+      var m = Object.assign({}, reviewRowsByKey)
+      m[k] = (reviewRowsByKey[k] || []).concat(j.rows)
+      reviewRowsByKey = m
     })
   }
 
-  // c: the normal category picker for this row. C: the Phase 4 preview, bootstrap mode only.
+  // Enter: a group shows or hides its rows (the first page loads when shown); on "more" the next page loads.
+  function reviewExpandCurrent() {
+    var it = review.cur
+    if (!it || it.kind === "row") return
+    var k = it.gkey
+    if (it.kind === "more") { reviewLoadRows(k); return }
+    var e = Object.assign({}, reviewExpanded)
+    if (e[k]) { delete e[k]; reviewExpanded = e; return }
+    e[k] = true
+    reviewExpanded = e
+    if (!(reviewRowsByKey[k] && reviewRowsByKey[k].length)) reviewLoadRows(k)
+  }
+
+  // Space: a row flips; on the header, every row of the group flips (all ticked unless all are).
+  function reviewTickCurrent() {
+    var it = review.cur
+    var grp = groupAt()
+    if (!it || !grp || it.kind === "more") return
+    if (it.kind === "row") { reviewUnticked = Insight.toggleTick(reviewUnticked, it.gkey, Number(it.row.id)); return }
+    reviewUnticked = Insight.setGroupTicks(reviewUnticked, it.gkey, grp, !Insight.allTicked(grp, reviewUnticked))
+  }
+
+  // a (on) and n (off): every row of the group.
+  function reviewSetGroupTicks(on) {
+    var grp = groupAt()
+    if (!grp) return
+    reviewUnticked = Insight.setGroupTicks(reviewUnticked, Insight.gkey(grp), grp, on)
+  }
+
+  // 1 2 3: the group's pending category becomes suggestion n. Nothing is written until y.
+  function reviewPick(n) {
+    var grp = groupAt()
+    if (!grp) return
+    var opt = Insight.optionFor(grp.options, n)
+    if (!opt) { toast("this group has no suggestion " + n); return }
+    setPending(grp, Number(opt.category_id), String(opt.path))
+  }
+
+  function setPending(grp, catId, path) {
+    var p = Object.assign({}, reviewPending)
+    p[Insight.gkey(grp)] = { category_id: catId, path: path }
+    reviewPending = p
+    toast("pending: " + path + "   y applies to the ticked rows")
+  }
+
+  // c opens the normal picker; the category it returns is the group's pending category (see
+  // reviewPendingPick). C: the Phase 4 preview of the group's representative row.
   function reviewCategorize(smart) {
-    var row = reviewRows[reviewCursor]
-    if (!row) return
-    if (smart && reviewMode !== "frequency") { toast("C previews a payee group in bootstrap mode"); return }
-    catIds = [Number(row.id)]
-    smartFlow = smart
+    var grp = groupAt()
+    if (!grp) return
+    if (smart) {
+      catIds = [Number(grp.id)]
+      smartFlow = true
+      reviewPickFlow = false
+      openCategorize()
+      return
+    }
+    catIds = Insight.groupIds(grp)
+    smartFlow = false
+    reviewPickFlow = true
+    reviewPickKey = Insight.gkey(grp)
     openCategorize()
+    picker.title = "Pending category for " + String(grp.payee)
+  }
+
+  // The picker chose catId (null: "Uncategorized", which is not a pending choice).
+  function reviewPendingPick(catId) {
+    var grp = Insight.groupByKey(reviewRows, reviewPickKey)
+    reviewPickFlow = false
+    if (catId === null) { toast("pick a category; uncategorized is not a pending choice"); return }
+    if (!grp) { toast("that group left the queue"); return }
+    setPending(grp, catId, Tree.pathOf(categoryList, catId) || String(catId))
+  }
+
+  // y: the ticked rows of the group become its pending category, in one undoable request. The group
+  // leaves the queue at once; a reload then brings back whatever was not ticked.
+  function reviewApply() {
+    var grp = groupAt()
+    if (!grp) return
+    var k = Insight.gkey(grp)
+    var plan = Insight.applyPlan(grp, Insight.pendingFor(reviewPending, grp, suggState !== null && suggState.enabled === true),
+                                 reviewUnticked)
+    if (!plan.ok) { toast(plan.message); return }
+    if (reviewInFlight[k]) return
+    var f = Object.assign({}, reviewInFlight)
+    f[k] = true
+    reviewInFlight = f
+    Backend.json("POST", "/transactions/categorize", { ids: plan.ids, category_id: plan.category_id }, function(xhr) {
+      reviewInFlight = withoutKey(reviewInFlight, k)
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j) { toast(envelopeText(xhr)); return }
+      var left = plan.ids.length - (Number(j.changed) || 0)
+      toast(String(j.label || plan.path) + (left > 0 ? "  (" + Insight.fmtN(left) + " not changed)" : "") + "   u to undo")
+      if (!reviewOpen) { afterChange(); return }
+      reviewDirty = true
+      reviewRows = Insight.removeGroup(reviewRows, k)
+      reviewRemaining = Math.max(0, reviewRemaining - 1)
+      reviewPending = withoutKey(reviewPending, k)
+      reviewUnticked = withoutKey(reviewUnticked, k)
+      reviewExpanded = withoutKey(reviewExpanded, k)
+      reviewRowsByKey = withoutKey(reviewRowsByKey, k)
+      reviewRowsLoading = withoutKey(reviewRowsLoading, k)
+      reviewReload(false)
+    })
   }
 
   function reviewAct(id) {
-    if (id === "review.close") closeReview()
-    else if (id === "review.skip") reviewStep(1)
-    else if (id === "review.prev") reviewStep(-1)
+    if (id === "review.close") {
+      if (Insight.anyExpanded(reviewExpanded)) { reviewExpanded = ({}); return }
+      closeReview()
+    }
+    else if (id === "review.more") reviewMore()
+    else if (id === "review.apply") reviewApply()
+    else if (id === "review.tick") reviewTickCurrent()
+    else if (id === "review.all") reviewSetGroupTicks(true)
+    else if (id === "review.none") reviewSetGroupTicks(false)
+    else if (id === "review.expand") reviewExpandCurrent()
     else if (id === "review.categorize") reviewCategorize(false)
     else if (id === "review.smart") reviewCategorize(true)
     else if (id === "review.undo") history("undo")
@@ -2582,15 +2706,19 @@ FocusScope {
     id: review
     anchors.fill: parent
     open: root.reviewOpen
-    rows: root.reviewRows
+    groups: root.reviewRows
     mode: root.reviewMode
     remaining: root.reviewRemaining
     startRemaining: root.reviewStart
-    cursor: root.reviewCursor
     loading: root.reviewLoading
     error: root.reviewError
     suggState: root.suggState
     suggError: root.suggError
+    pending: root.reviewPending
+    unticked: root.reviewUnticked
+    expanded: root.reviewExpanded
+    rowsByKey: root.reviewRowsByKey
+    loadingByKey: root.reviewRowsLoading
     onAct: function(id) { root.reviewAct(id) }
     onOpenChanged: if (!open) Qt.callLater(root.restoreFocus)
   }

@@ -281,7 +281,7 @@ fn migration_v2_is_rerunnable() {
         f(&tx).unwrap();
         tx.commit().unwrap();
     }
-    assert_eq!(migrations::latest_version(), 2);
+    assert_eq!(migrations::latest_version(), 3);
     let conn = db.conn.lock().unwrap();
     assert!(migrations::column_exists(&conn, "change_batch", "superseded").unwrap());
 }
@@ -301,7 +301,7 @@ fn migrating_from_v1_keeps_history_and_writes_one_backup() {
     let backups = || std::fs::read_dir(dir.join("backups")).unwrap().count();
     let first = backups();
     let rep = db.migrate().unwrap();
-    assert_eq!((rep.from, rep.to), (1, 2));
+    assert_eq!((rep.from, rep.to), (1, 3));
     assert!(rep.backup.is_some());
     assert_eq!(backups(), first + 1);
     assert_eq!(db.journal(100).unwrap().rows.len(), before, "history survives the migration");
