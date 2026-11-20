@@ -23,10 +23,14 @@ var SCOPE_TITLES = {
   smart: "Categorize with preview (C; keys work inside the overlay)",
   dash: "Dashboard and insights (D; keys work inside the overlay)",
   review: "Review queue (R; keys work inside the overlay)",
+  reports: "Reports (P; keys work inside the overlay)",
+  reportsEdit: "Report editor (n, Enter on a report)",
+  reportsView: "Report preview and run history (p, r)",
+  reportsConfirm: "Delete a report (d)",
   help: "This help"
 }
 
-var SCOPE_ORDER = ["global", "table", "manager", "smart", "dash", "review", "sidebar", "detail", "search", "picker", "prompt", "help"]
+var SCOPE_ORDER = ["global", "table", "manager", "smart", "dash", "review", "reports", "reportsEdit", "reportsView", "reportsConfirm", "sidebar", "detail", "search", "picker", "prompt", "help"]
 
 var BINDINGS = [
   // ---- anywhere
@@ -53,6 +57,7 @@ var BINDINGS = [
   { id: "undo", scope: "global", keys: ["u"], label: "Undo the last change (categorizing, category edits)" },
   { id: "dash.open", scope: "global", keys: ["D"], label: "Dashboard: monthly and category totals, top payees; Tab moves to Recurring, Anomalies, Transfers" },
   { id: "review.open", scope: "global", keys: ["R"], label: "Review queue: uncategorized rows with numbered suggestions (1 2 3 accept)" },
+  { id: "reports.open", scope: "global", keys: ["P"], label: "Reports: scheduled email reports (n new, Enter edit, p preview, t send test, e enable, r runs, d delete)" },
   { id: "redo", scope: "global", keys: ["C-r"], label: "Redo" },
   { id: "quit", scope: "global", keys: ["q"], label: "Quit" },
 
@@ -140,6 +145,31 @@ var BINDINGS = [
   { id: "review.prev", scope: "review", keys: ["Backspace"], label: "Previous group" },
   { id: "review.undo", scope: "review", keys: ["u"], label: "Undo the last change" },
   { id: "review.close", scope: "review", keys: ["Esc"], label: "Collapse the expanded groups; with none expanded, leave the queue" },
+  // ---- reports (P; overlay). The list; the editor and the preview/runs views have their own scopes.
+  { id: "reports.down", scope: "reports", keys: ["j", "Down"], label: "Move down" },
+  { id: "reports.up", scope: "reports", keys: ["k", "Up"], label: "Move up" },
+  { id: "reports.new", scope: "reports", keys: ["n"], label: "New report (the query defaults to the current table query)" },
+  { id: "reports.edit", scope: "reports", keys: ["Enter"], label: "Edit the report" },
+  { id: "reports.preview", scope: "reports", keys: ["p"], label: "Preview: subject, period, row count and the text part (nothing is sent)" },
+  { id: "reports.test", scope: "reports", keys: ["t"], label: "Send a test to the authenticated sender" },
+  { id: "reports.toggle", scope: "reports", keys: ["e"], label: "Enable or disable the schedule (needs Gmail authorized)" },
+  { id: "reports.runs", scope: "reports", keys: ["r"], label: "Run history" },
+  { id: "reports.delete", scope: "reports", keys: ["d"], label: "Delete the report (asks first)" },
+  { id: "reports.close", scope: "reports", keys: ["Esc"], label: "Close" },
+  { id: "reportsEdit.down", scope: "reportsEdit", keys: ["j", "Down"], label: "Next field" },
+  { id: "reportsEdit.up", scope: "reportsEdit", keys: ["k", "Up"], label: "Previous field" },
+  { id: "reportsEdit.enter", scope: "reportsEdit", keys: ["Enter"], label: "Edit the text field, or change the choice" },
+  { id: "reportsEdit.next", scope: "reportsEdit", keys: ["l", "Right", "Space"], label: "Next choice (shape, period, schedule, weekday, day; Space toggles redact)" },
+  { id: "reportsEdit.prev", scope: "reportsEdit", keys: ["h", "Left"], label: "Previous choice" },
+  { id: "reportsEdit.save", scope: "reportsEdit", keys: ["s", "C-s"], label: "Save the report" },
+  { id: "reportsEdit.cancel", scope: "reportsEdit", keys: ["Esc"], label: "Cancel without saving" },
+  { id: "reportsView.down", scope: "reportsView", keys: ["j", "Down"], label: "Scroll down" },
+  { id: "reportsView.up", scope: "reportsView", keys: ["k", "Up"], label: "Scroll up" },
+  { id: "reportsView.pagedown", scope: "reportsView", keys: ["PgDown", "Space"], label: "Scroll down a page" },
+  { id: "reportsView.pageup", scope: "reportsView", keys: ["PgUp"], label: "Scroll up a page" },
+  { id: "reportsView.close", scope: "reportsView", keys: ["Esc"], label: "Back to the list" },
+  { id: "reportsConfirm.yes", scope: "reportsConfirm", keys: ["y"], label: "Yes, delete the report and its timers" },
+  { id: "reportsConfirm.no", scope: "reportsConfirm", keys: ["n", "Esc"], label: "No, keep it" },
   // ---- detail pane
   { id: "suggest.accept", scope: "detail", keys: ["C-y"], label: "Accept the suggested category for this uncategorized row (undoable with u)" },
   { id: "detail.down", scope: "detail", keys: ["j", "Down"], label: "Scroll down" },

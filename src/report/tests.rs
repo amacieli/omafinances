@@ -260,3 +260,96 @@ fn failed_send_stores_no_row_text() {
     assert!(!stored.contains("ACME") && !stored.contains("1234.56"), "{stored}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ---- headless `report run` logic (the CLI's library path, with a fake mailer) ------------------
+
+fn cli_ctx<'a>(db: &'a Db, cache: &'a crate::cache::Cache, model: &'a crate::insight::Model, allow: &'a [String]) -> run::Ctx<'a> {
+    run::Ctx {
+        db,
+        cache,
+        model,
+        today: d("2026-11-20"),
+        now: dt("2026-11-20 07:30"),
+        opts: Options { exclude_transfers: true },
+        allowlist: allow,
+    }
+}
+
+#[test]
+fn cli_run_ok_and_failed_map_to_exit_statuses() {
+    let (dir, path) = crate::db::tests::setup();
+    let db = Db::open(&path, crate::db::tests::PASS).unwrap();
+    db.migrate().unwrap();
+    let rep = fixture_report(&db);
+    let (cache, model) = super::load_model(&db).unwrap();
+    let allow: Vec<String> = vec![];
+    let to = vec!["me@example.com".to_string()];
+
+    // ok: status "ok" is exit 0 in cmd_run
+    let good = FakeMailer { sent: Mutex::new(vec![]), fail: false };
+    let out = run::execute(&cli_ctx(&db, &cache, &model, &allow), &rep, Some(&good), "manual", &to).unwrap();
+    assert_eq!(out.status, "ok");
+
+    // failed: exit 1; the detail is a fixed phrase, never provider text
+    let bad = FakeMailer { sent: Mutex::new(vec![]), fail: true };
+    let out = run::execute(&cli_ctx(&db, &cache, &model, &allow), &rep, Some(&bad), "manual", &to).unwrap();
+    assert_eq!(out.status, "failed");
+    assert_eq!(out.detail.as_deref(), Some("send failed"));
+    assert!(!out.detail.unwrap().contains("ACME"));
+
+    // no Gmail at all: failed, nothing sent
+    let out = run::execute(&cli_ctx(&db, &cache, &model, &allow), &rep, None, "manual", &to).unwrap();
+    assert_eq!(out.status, "failed");
+
+    // a recipient outside the allowlist is refused even by a manual run
+    let stranger = vec!["stranger@example.org".to_string()];
+    let out = run::execute(&cli_ctx(&db, &cache, &model, &allow), &rep, Some(&good), "manual", &stranger).unwrap();
+    assert_eq!(out.status, "failed");
+    assert_eq!(out.detail.as_deref(), Some("recipient not allowed"));
+
+    assert_eq!(good.sent.lock().unwrap().len(), 1, "only the ok run sent mail");
+    assert_eq!(db.runs_list(rep.id, 10).unwrap().len(), 4, "every attempt is recorded");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn cli_timer_run_on_disabled_report_is_skipped_but_manual_sends() {
+    let (dir, path) = crate::db::tests::setup();
+    let db = Db::open(&path, crate::db::tests::PASS).unwrap();
+    db.migrate().unwrap();
+    let rep = fixture_report(&db);
+    db.report_set_enabled(rep.id, false).unwrap();
+    let rep = Report::from_row(&db.report_get(rep.id).unwrap().unwrap()).unwrap();
+    let (cache, model) = super::load_model(&db).unwrap();
+    let allow: Vec<String> = vec![];
+    let to = vec!["me@example.com".to_string()];
+    let m = FakeMailer { sent: Mutex::new(vec![]), fail: false };
+
+    let out = run::execute(&cli_ctx(&db, &cache, &model, &allow), &rep, Some(&m), "timer", &to).unwrap();
+    assert_eq!(out.status, "skipped");
+    assert!(m.sent.lock().unwrap().is_empty());
+
+    let out = run::execute(&cli_ctx(&db, &cache, &model, &allow), &rep, Some(&m), "manual", &to).unwrap();
+    assert_eq!(out.status, "ok");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn cli_missing_report_is_not_found() {
+    let (dir, path) = crate::db::tests::setup();
+    let db = Db::open(&path, crate::db::tests::PASS).unwrap();
+    db.migrate().unwrap();
+    assert!(db.report_get(424242).unwrap().is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn cli_dispatch_rejects_bad_arguments_before_touching_the_keyring() {
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+    assert!(super::cli::run_cli(&s(&[])).is_err());
+    assert!(super::cli::run_cli(&s(&["run"])).is_err());
+    assert!(super::cli::run_cli(&s(&["run", "abc"])).is_err());
+    assert!(super::cli::run_cli(&s(&["run", "1", "--trigger", "bogus"])).is_err());
+    assert!(super::cli::run_cli(&s(&["timers"])).is_err());
+    assert!(super::cli::run_cli(&s(&["list", "extra"])).is_err());
+}

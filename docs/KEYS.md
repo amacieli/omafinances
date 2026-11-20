@@ -27,6 +27,7 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `r` | Refresh from Lunch Money, then reload |
 | `m` | Category manager (full pane; see below) |
 | `D` | Dashboard and insights (monthly and category totals; see below) |
+| `P` | Reports: scheduled email reports (see below) |
 | `R` | Review queue: uncategorized rows with numbered suggestions (see below) |
 | `u` | Undo the last change (categorizing, category edits); toast says what was undone |
 | `Ctrl-r` | Redo the change that was undone |
@@ -227,3 +228,21 @@ Commands (the bar text starts with `:`): `:save <name>` saves the active query a
 | `k` / `Up` | Scroll up |
 
 Mouse: clicking a row selects it; the wheel scrolls; scrolling near the end loads the next page of 200 rows.
+
+### Reports (`P`; overlay, keys work inside it)
+
+Header: `GET /mail/status` (`Sending as <sender>`, `Gmail not authorized: run omafinances gmail-auth`, or `client not configured: set [mail] client_secret_file`). `:reports` opens the list; `:report <name>` opens a new report named so, with the current table query. Error envelopes are shown verbatim; a 409 `not_authenticated` adds the hint to run `omafinances gmail-auth` in a terminal.
+
+| Key | Action |
+| --- | --- |
+| `j` / `Down`, `k` / `Up` | Move in the list |
+| `n` | New report (query = the current table query, recipients = the sender) |
+| `Enter` | Edit |
+| `p` | Preview (subject, period, row count, the text part; `j`/`k`/`PgUp`/`PgDown` scroll, HTML is not rendered) |
+| `t` | Send a test to the sender |
+| `e` | Enable / disable the schedule |
+| `r` | Run history |
+| `d` | Delete (then `y` / `n`) |
+| `Esc` | Close |
+
+Editor: `j`/`k` move between fields, `Enter` types a text field (name, query, time, recipients) or steps a choice, `h`/`l` (or `Left`/`Right`) step a choice (shape, period, schedule daily/weekly/monthly/quarterly, weekday, day 1-28 or last), `Space` toggles redact, `s` or `Ctrl-s` saves, `Esc` cancels. The next 3 runs of the schedule update live (`GET /schedule/preview`).

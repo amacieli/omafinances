@@ -7,6 +7,7 @@ import "state/Query.js" as Query
 import "keys/Keymap.js" as Keymap
 import "state/Smart.js" as Smart
 import "state/Insight.js" as Insight
+import "state/Reports.js" as RepJs
 import "common"
 import "views"
 import "common/Fuzzy.js" as Fuzzy
@@ -127,6 +128,7 @@ FocusScope {
   property int dashGen: 0
   // ------------------------------------------------------------------ Phase 5: review queue (R) and suggestions
   property bool reviewOpen: false
+  property bool reportsOpen: false     // Phase 6: Reports overlay (P)
   property var reviewRows: []             // loaded GET /review rows: one per payee group, in queue order
   property string reviewMode: ""          // "suggest" | "frequency"
   property int reviewRemaining: 0         // groups the queue still holds
@@ -181,7 +183,7 @@ FocusScope {
   ListModel { id: rows }
   ListModel { id: sideRows }
 
-  readonly property bool overlayOpen: picker.open || prompt.open || help.open || searchBar.open || managerOpen || smartOpen || dashOpen || reviewOpen
+  readonly property bool overlayOpen: picker.open || prompt.open || help.open || searchBar.open || managerOpen || smartOpen || dashOpen || reviewOpen || reportsOpen
 
   // ------------------------------------------------------------------ helpers
   function parseJson(text) {
@@ -675,6 +677,11 @@ FocusScope {
 
   // The prompt has already validated the text, so the parsers below only ever see good input.
   function onPromptSubmitted(text) {
+    if (promptCtx.indexOf("report:") === 0) {
+      var rerr = reportsView.promptResult(promptCtx.substring(7), text)
+      if (rerr) prompt.fail(rerr)
+      return
+    }
     if (promptCtx === "newCat") { createAndAssign(text); return }
     if (promptCtx === "mgrAdd") { mgrCreate(text, false); return }
     if (promptCtx === "mgrSibling") { mgrCreate(text, true); return }
@@ -763,6 +770,7 @@ FocusScope {
 
   function onPromptCancelled() {
     promptGen++
+    if (promptCtx.indexOf("report:") === 0) return
     if (promptCtx === "newCat") { openCategorize(); return }
     if (promptCtx.indexOf("mgr") === 0) return
     if (promptCtx === "date") openDatePicker()
@@ -781,6 +789,7 @@ FocusScope {
     picker.focus = false; prompt.focus = false; help.focus = false
     searchBar.field.focus = false
     if (smartOpen) { smart.focusKeys(); return }
+    if (reportsOpen) { reportsView.focusKeys(); return }
     if (reviewOpen) { review.focusKeys(); return }
     if (dashOpen) { dashView.focusKeys(); return }
     if (managerOpen) { manager.focusKeys(); return }
@@ -1772,6 +1781,8 @@ FocusScope {
     else if (pc.cmd === "undo") { closeSearch(false); history("undo") }
     else if (pc.cmd === "redo") { closeSearch(false); history("redo") }
     else if (pc.cmd === "journal") { closeSearch(false); openJournal() }
+    else if (pc.cmd === "reports") { closeSearch(false); openReports() }
+    else if (pc.cmd === "report") { closeSearch(false); openReports(pc.arg) }
   }
 
   // The backend's {error} text when it sent one, else the status.
@@ -1963,6 +1974,30 @@ FocusScope {
   }
 
   function closeDashboard() { dashOpen = false }
+
+  // ---- reports (Phase 6): the overlay owns its requests; this is the entry, the text prompt bridge.
+  function openReports(newName) {
+    if (overlayOpen) return
+    reportsOpen = true
+    reportsView.currentQuery = filter.slash
+    reportsView.show(newName)
+  }
+
+  function openReportPrompt(ctx, title, hint, placeholder, initial) {
+    promptCtx = "report:" + ctx
+    promptGen++
+    prompt.title = title
+    prompt.hint = hint
+    prompt.placeholder = placeholder
+    prompt.closeOnSubmit = true
+    prompt.validator = function(t) {
+      if (ctx === "name") return t.trim() === "" ? "name is required" : ""
+      if (ctx === "time") return RepJs.timeError(t.trim())
+      if (ctx === "recipients") return RepJs.recipientsError(RepJs.parseRecipients(t))
+      return ""
+    }
+    prompt.show(initial)
+  }
 
   function loadDashboard() {
     var g = ++dashGen
@@ -2327,6 +2362,7 @@ FocusScope {
         break
       case "dash.open": openDashboard(); break
       case "review.open": openReview(); break
+      case "reports.open": openReports(); break
       case "suggest.accept": suggestAccept(); break
       case "focus.next": cycleFocus(1); break
       case "focus.prev": cycleFocus(-1); break
@@ -2721,6 +2757,15 @@ FocusScope {
     loadingByKey: root.reviewRowsLoading
     onAct: function(id) { root.reviewAct(id) }
     onOpenChanged: if (!open) Qt.callLater(root.restoreFocus)
+  }
+
+  Reports {
+    id: reportsView
+    anchors.fill: parent
+    open: root.reportsOpen
+    onAskText: function(ctx, title, hint, placeholder, initial) { root.openReportPrompt(ctx, title, hint, placeholder, initial) }
+    onCloseRequested: root.reportsOpen = false
+    onOpenChanged: if (!open) { root.reportsOpen = false; Qt.callLater(root.restoreFocus) }
   }
 
   SmartPreview {

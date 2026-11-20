@@ -526,3 +526,5 @@ fn refresh(state: &AppState) -> (u16, Value) {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod report_tests;

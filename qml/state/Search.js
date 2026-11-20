@@ -3,7 +3,7 @@
 // of a /search/parse reply. Pure functions only (no QML types), checked with node:
 // tests/qml/search.test.js.
 
-var COMMANDS = ["save", "view", "views", "delete", "clear", "help", "undo", "redo", "journal"]
+var COMMANDS = ["save", "view", "views", "delete", "clear", "help", "undo", "redo", "journal", "report", "reports"]
 
 var COMMAND_HELP = {
   save: "save the active query and sort as a view",
@@ -14,7 +14,9 @@ var COMMAND_HELP = {
   help: "open the keyboard help",
   undo: "undo the last change (categorizing, category edits)",
   redo: "redo the change that was undone",
-  journal: "list the last 20 changes, newest first"
+  journal: "list the last 20 changes, newest first",
+  report: "new scheduled report from the current query",
+  reports: "open the reports list"
 }
 
 var SORT_FIELDS = ["date", "amount", "payee", "account", "category"]
@@ -113,7 +115,7 @@ function parseCommand(text) {
   var arg = m[2].trim()
   if (name === "") return { error: "type a command after the colon: " + COMMANDS.map(function(c) { return ":" + c }).join("  ") }
   if (COMMANDS.indexOf(name) < 0) return { error: "unknown command :" + name + " (try :help)" }
-  if ((name === "save" || name === "view" || name === "delete") && arg === "")
+  if ((name === "save" || name === "view" || name === "delete" || name === "report") && arg === "")
     return { error: "usage: :" + name + " <name>" }
   return { cmd: name, arg: unquote(arg) }
 }
