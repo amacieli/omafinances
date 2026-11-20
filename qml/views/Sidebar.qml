@@ -99,14 +99,15 @@ Rectangle {
           Layout.minimumWidth: 0
           text: row.label
           color: row.sel ? Commons.Color.accent
-               : (row.rowKind === "uncat" ? Commons.Color.muted : Commons.Color.menu.text)
+               : ((row.rowKind === "uncat" || row.rowKind === "note") ? Commons.Color.muted : Commons.Color.menu.text)
           font.family: Style.font.family
           font.pixelSize: Style.font.body
-          font.italic: row.rowKind === "uncat"
+          font.italic: row.rowKind === "uncat" || row.rowKind === "note"
           font.bold: row.sel
           elide: Text.ElideRight
         }
         Text {
+          visible: row.rowKind !== "view" && row.rowKind !== "note"
           text: Query.fmtCount(row.count)
           color: Commons.Color.muted
           font.family: Style.font.family

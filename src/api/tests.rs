@@ -313,3 +313,395 @@ fn get_refresh_is_405_and_the_cache_survives_a_failed_refresh() {
     assert_eq!(get(&s, "/transactions").1["all"], 4);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- slash search: /transactions?s=, /search/parse, /views, /history ----------------------------
+//
+// Synthetic data (see db::tests::setup): 1 "A" Checking Paint 1.5 (2026-01-01); 2 "B" Manual Cash
+// 2.5 (01-03); 3 no payee 3.5 (01-03); 4 "D" Checking 4.5 (2025-12-31). "Today" is pinned to 2026-01-08.
+
+fn slash_state() -> (std::path::PathBuf, std::path::PathBuf, AppState) {
+    let (dir, path, s) = loaded_state();
+    let s = s.with_config_dir(dir.join("cfg")).with_today(chrono::NaiveDate::from_ymd_opt(2026, 1, 8).unwrap());
+    (dir, path, s)
+}
+
+fn send(state: &AppState, method: &str, path: &str, body: &str) -> (u16, Value) {
+    handle_body(state, method, path, "", body.as_bytes())
+}
+
+fn s_ids(state: &AppState, qs: &str) -> Vec<i64> {
+    let (code, body) = get_q(state, "/transactions", qs);
+    assert_eq!(code, 200, "{} -> {}", qs, body);
+    ids(&body)
+}
+
+#[test]
+fn transactions_slash_search() {
+    let (dir, _, s) = slash_state();
+    assert_eq!(s_ids(&s, "s=a%3Acheck"), vec![1, 4]);
+    assert_eq!(s_ids(&s, "s=-a%3Acheck"), vec![3, 2]);
+    assert_eq!(s_ids(&s, "s=p%3Aa"), vec![1]);
+    assert_eq!(s_ids(&s, "s=c%3Ahome"), vec![1]);
+    assert_eq!(s_ids(&s, "s=c%3Anone"), vec![3, 2, 4]);
+    assert_eq!(s_ids(&s, "s=lm%3Agroceries"), vec![1, 4]);
+    assert_eq!(s_ids(&s, "s=d%3Athis-month"), vec![3, 2, 1]); // today pinned to 2026-01-08
+    assert_eq!(s_ids(&s, "s=d%3A2025"), vec![4]);
+    assert_eq!(s_ids(&s, "s=%3E3"), vec![3, 4]);
+    assert_eq!(s_ids(&s, "s=a%3Acheck%20amount%3A%3E2"), vec![4]);
+
+    // response is unchanged plus the canonical text; totals follow the search
+    let (_, body) = get_q(&s, "/transactions", "s=A%3ACHECK%20%20amount%3A%3E1");
+    assert_eq!(body["search"], serde_json::json!({ "canonical": "a:check amount:>1" }));
+    assert_eq!((body["all"].as_u64(), body["total"].as_u64(), body["sum_out"].as_f64()), (Some(4), Some(2), Some(6.0)));
+    let (_, plain) = get(&s, "/transactions");
+    assert!(plain.get("search").is_none());
+    let (_, empty) = get_q(&s, "/transactions", "s=");
+    assert_eq!((empty["total"].as_u64(), empty["search"]["canonical"].as_str()), (Some(4), Some("")));
+
+    // composes with the structured filters: final = structured AND search
+    assert_eq!(s_ids(&s, "s=c%3Anone&account=1"), vec![4]);
+    assert_eq!(s_ids(&s, "s=a%3Acheck&q=a"), vec![1]);
+    assert_eq!(s_ids(&s, "s=amount%3A%3E1&flow=out&from=2026-01-02&to=2026-01-31"), vec![3, 2]);
+    assert_eq!(s_ids(&s, "s=p%3Az"), Vec::<i64>::new());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn search_sort_directive_applies_unless_the_request_sorts() {
+    let (dir, _, s) = slash_state();
+    assert_eq!(s_ids(&s, ""), vec![3, 2, 1, 4]);
+    assert_eq!(s_ids(&s, "s=sort%3Aamount"), vec![1, 2, 3, 4]);
+    assert_eq!(s_ids(&s, "s=sort%3A-amount"), vec![4, 3, 2, 1]);
+    assert_eq!(s_ids(&s, "s=a%3Acheck%20sort%3Aamount"), vec![1, 4]);
+    assert_eq!(s_ids(&s, "s=a%3Acheck%20sort%3A-amount"), vec![4, 1]);
+    // explicit sort / dir win, each on its own
+    assert_eq!(s_ids(&s, "s=a%3Acheck%20sort%3Aamount&sort=date&dir=asc"), vec![4, 1]);
+    assert_eq!(s_ids(&s, "s=a%3Acheck%20sort%3Aamount&sort=date"), vec![1, 4]); // sort given: its default dir
+    assert_eq!(s_ids(&s, "s=a%3Acheck%20sort%3A-amount&dir=asc"), vec![4, 1]); // dir given: the directive is ignored (date asc)
+    // the directive is echoed in the canonical text
+    let (_, body) = get_q(&s, "/transactions", "s=sort%3A-amount%20p%3Aa");
+    assert_eq!(body["search"]["canonical"], "p:a sort:-amount");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn transactions_search_errors() {
+    let (dir, _, s) = slash_state();
+    let (code, body) = get_q(&s, "/transactions", "s=pyee%3Ax");
+    assert_eq!(code, 400);
+    assert_eq!(body["error"], "parse");
+    assert_eq!(body["parse_error"]["pos"], 0);
+    assert_eq!(body["parse_error"]["len"], 4);
+    assert_eq!(body["parse_error"]["message"], "unknown field \"pyee\"; did you mean \"p\"?");
+    assert_eq!(body.as_object().unwrap().len(), 2);
+    let (code, body) = get_q(&s, "/transactions", "s=a%20%22b%20c");
+    assert_eq!((code, body["parse_error"]["pos"].as_u64(), body["parse_error"]["len"].as_u64()), (400, Some(2), Some(4)));
+    for qs in ["s=a&s=b", "s=%zz", "s=%ff", "s=a&limit=5000", "s=a&sort=nope"] {
+        let (code, body) = get_q(&s, "/transactions", qs);
+        assert_eq!(code, 400, "{}", qs);
+        assert!(body["error"].is_string());
+        assert!(body.get("parse_error").is_none(), "{}", qs);
+    }
+    // the text of a failed query is never in the error body outside the parse message
+    let (_, body) = get_q(&s, "/transactions", "s=zzsecretzz%3Ax");
+    assert_eq!(body["error"], "parse");
+    assert!(!body["error"].as_str().unwrap().contains("secret"));
+    // without a database the search is still validated first, then 503
+    assert_eq!(get_q(&no_db(), "/transactions", "s=pyee%3Ax").0, 400);
+    assert_eq!(get_q(&no_db(), "/transactions", "s=p%3Ax").0, 503);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn search_parse_route() {
+    let (dir, _, s) = slash_state();
+    let (code, b) = get_q(&s, "/search/parse", "q=p%3Aa%20-is%3Apending");
+    assert_eq!(code, 200);
+    assert_eq!(b["ok"], true);
+    assert_eq!(b["canonical"], "p:a -is:pending");
+    assert_eq!(b["terms"][0], serde_json::json!({ "text": "p:a", "neg": false, "field": "payee", "value": "a" }));
+    assert_eq!((b["terms"][1]["neg"].clone(), b["terms"][1]["field"].clone(), b["terms"][1]["value"].clone()), (true.into(), "is".into(), "pending".into()));
+    assert!(b["sort"].is_null() && b["parse_error"].is_null());
+    assert_eq!(b["matched"], 1);
+    assert!(b["completions"]["items"].is_array());
+    assert_eq!(b["completions"]["start"], 4);
+
+    // free text, sort and an empty query
+    let (_, b) = get_q(&s, "/search/parse", "q=hello%20sort%3A-amount");
+    assert_eq!((b["terms"][0]["field"].as_str(), b["terms"][0]["value"].as_str(), b["sort"].as_str()), (Some("text"), Some("hello"), Some("-amount")));
+    let (_, b) = get_q(&s, "/search/parse", "q=");
+    assert_eq!((b["ok"].clone(), b["terms"].as_array().unwrap().len(), b["matched"].clone()), (true.into(), 0, 4.into()));
+    let (_, b) = get(&s, "/search/parse");
+    assert_eq!(b["ok"], true);
+
+    // errors are 200 with ok:false and still carry completions
+    let (code, b) = get_q(&s, "/search/parse", "q=p%3Aa%20pyee%3Ax");
+    assert_eq!(code, 200);
+    assert_eq!((b["ok"].clone(), b["canonical"].is_null(), b["matched"].is_null(), b["terms"].as_array().unwrap().len()), (false.into(), true, true, 0));
+    assert_eq!((b["parse_error"]["pos"].as_u64(), b["parse_error"]["len"].as_u64()), (Some(4), Some(4)));
+    assert!(b["parse_error"]["message"].as_str().unwrap().contains("did you mean \"p\""));
+    assert!(b["completions"]["items"].is_array());
+
+    // completions: field names, payees, accounts, categories, cursor
+    let labels = |b: &Value| -> Vec<String> { b["completions"]["items"].as_array().unwrap().iter().map(|i| i["label"].as_str().unwrap().to_string()).collect() };
+    let (_, b) = get_q(&s, "/search/parse", "q=a");
+    assert_eq!(labels(&b), vec!["a:", "amount:"]);
+    assert_eq!((b["completions"]["start"].as_u64(), b["completions"]["end"].as_u64()), (Some(0), Some(1)));
+    assert_eq!(b["completions"]["items"][0]["insert"], "a:");
+    let (_, b) = get_q(&s, "/search/parse", "q=a%3A");
+    assert_eq!(labels(&b), vec!["Checking", "Manual Cash"]);
+    assert_eq!(b["completions"]["items"][0]["detail"], "2 txns");
+    assert_eq!(b["completions"]["items"][1]["insert"], "a:\"Manual Cash\"");
+    let (_, b) = get_q(&s, "/search/parse", "q=p%3A");
+    assert!(labels(&b).contains(&"A".to_string()));
+    let (_, b) = get_q(&s, "/search/parse", "q=c%3A");
+    assert!(labels(&b).contains(&"Home".to_string()) && labels(&b).contains(&"none".to_string()));
+    let (_, b) = get_q(&s, "/search/parse", "q=p%3Aa%20c%3Ah&pos=3");
+    assert_eq!((b["completions"]["start"].as_u64(), b["completions"]["end"].as_u64()), (Some(0), Some(3)));
+    let (_, b) = get_q(&s, "/search/parse", "q=p%3Aa%20c%3Ah&pos=999");
+    assert_eq!(b["completions"]["start"], 4);
+    let (_, b) = get_q(&s, "/search/parse", "q=%C3%A9&pos=1"); // inside a multibyte char: no panic
+    assert_eq!(b["ok"], true);
+
+    // bad parameters
+    for qs in ["q=a&pos=x", "q=a&pos=-1", "q=a&pos=%2B1", "q=a&x=1", "q=a&q=b", "q=%zz", "pos=1&pos=2"] {
+        assert_eq!(get_q(&s, "/search/parse", qs).0, 400, "{}", qs);
+    }
+    // no database: still parses, matched is null
+    let (code, b) = get_q(&no_db(), "/search/parse", "q=p%3Aa");
+    assert_eq!((code, b["ok"].clone(), b["matched"].is_null()), (200, true.into(), true));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn journal_rows(path: &std::path::Path) -> Vec<(String, String, String, Option<String>, Option<String>)> {
+    let c = raw(path);
+    let mut st = c
+        .prepare("SELECT b.kind, b.label, i.entity, i.old_value, i.new_value FROM change_batch b JOIN change_item i ON i.batch_id=b.id ORDER BY b.id, i.id")
+        .unwrap();
+    st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap().map(|r| r.unwrap()).collect()
+}
+
+#[test]
+fn views_crud_ordering_and_upsert() {
+    let (dir, path, s) = slash_state();
+    assert_eq!(get(&s, "/views"), (200, serde_json::json!({ "rows": [] })));
+
+    let (code, v1) = send(&s, "POST", "/views", r#"{"name":"Big spends","query":"amount:>50"}"#);
+    assert_eq!(code, 200);
+    assert_eq!((v1["name"].clone(), v1["query"].clone(), v1["sort"].is_null(), v1["position"].clone()), ("Big spends".into(), "amount:>50".into(), true, 1.into()));
+    let id1 = v1["id"].as_i64().unwrap();
+    let mut keys: Vec<&str> = v1.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort();
+    assert_eq!(keys, vec!["id", "name", "position", "query", "sort"]);
+    let (_, v2) = send(&s, "POST", "/views", r#"{"name":"Amazon","query":"p:amazon d:this-year","sort":"-amount"}"#);
+    assert_eq!((v2["sort"].clone(), v2["position"].clone()), ("-amount".into(), 2.into()));
+
+    let rows = |s: &AppState| -> Vec<String> { get(s, "/views").1["rows"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap().to_string()).collect() };
+    assert_eq!(rows(&s), vec!["Big spends", "Amazon"]); // by position, then name
+
+    // upsert by name, case-insensitively: same id and position, new spelling and query
+    let (code, up) = send(&s, "POST", "/views", r#"{"name":"BIG SPENDS","query":"amount:>100","sort":"date"}"#);
+    assert_eq!(code, 200);
+    assert_eq!((up["id"].as_i64(), up["position"].as_i64(), up["name"].as_str(), up["query"].as_str(), up["sort"].as_str()), (Some(id1), Some(1), Some("BIG SPENDS"), Some("amount:>100"), Some("date")));
+    assert_eq!(rows(&s), vec!["BIG SPENDS", "Amazon"]);
+    // sort omitted on upsert clears it; name and query are trimmed
+    let (_, up) = send(&s, "POST", "/views", "{\"name\":\"  big spends \",\"query\":\" amount:>100 \"}");
+    assert_eq!((up["name"].as_str(), up["query"].as_str(), up["sort"].is_null()), (Some("big spends"), Some("amount:>100"), true));
+    // bound parameters: odd characters are data
+    let nasty = "x'); DROP TABLE saved_view;--";
+    let (code, v) = send(&s, "POST", "/views", &serde_json::json!({ "name": nasty, "query": "\"it's\"" }).to_string());
+    assert_eq!(code, 200);
+    assert_eq!(get(&s, "/views").1["rows"].as_array().unwrap().len(), 3);
+    assert_eq!(get(&s, "/views").1["rows"][2]["name"], nasty);
+    // name of exactly 60 characters (multibyte counts as characters)
+    assert_eq!(send(&s, "POST", "/views", &serde_json::json!({ "name": "é".repeat(60), "query": "a" }).to_string()).0, 200);
+
+    // delete
+    let (code, b) = send(&s, "DELETE", &format!("/views/{}", v["id"]), "");
+    assert_eq!((code, b), (200, serde_json::json!({ "ok": true })));
+    assert_eq!(send(&s, "DELETE", &format!("/views/{}", v["id"]), "").0, 404);
+    assert_eq!(send(&s, "DELETE", "/views/99999", "").0, 404);
+    assert_eq!(send(&s, "DELETE", "/views/abc", "").0, 400);
+    assert_eq!(send(&s, "DELETE", "/views/1.5", "").0, 400);
+    assert_eq!(send(&s, "DELETE", "/views/+1", "").0, 400);
+    assert_eq!(send(&s, "DELETE", "/views/-1", "").0, 404);
+    assert_eq!(rows(&s).len(), 3);
+
+    // journal: one batch (kind view) with one item per write, none for refused ones
+    let j = journal_rows(&path);
+    let kinds: Vec<(&str, &str, &str)> = j.iter().map(|r| (r.0.as_str(), r.1.as_str(), r.2.as_str())).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            ("view", "add view", "saved_view"),
+            ("view", "add view", "saved_view"),
+            ("view", "update view", "saved_view"),
+            ("view", "update view", "saved_view"),
+            ("view", "add view", "saved_view"),
+            ("view", "add view", "saved_view"),
+            ("view", "delete view", "saved_view"),
+        ]
+    );
+    assert!(j[0].3.is_none() && j[0].4.as_deref().unwrap().contains("amount:>50"));
+    assert!(j[2].3.as_deref().unwrap().contains("amount:>50") && j[2].4.as_deref().unwrap().contains("amount:>100"));
+    assert!(j[6].3.as_deref().unwrap().contains("DROP TABLE") && j[6].4.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn views_validation() {
+    let (dir, path, s) = slash_state();
+    let bad = |body: &str| send(&s, "POST", "/views", body);
+    for body in [
+        r#"{"name":"","query":"a"}"#,
+        r#"{"name":"   ","query":"a"}"#,
+        r#"{"query":"a"}"#,
+        r#"{"name":null,"query":"a"}"#,
+        r#"{"name":5,"query":"a"}"#,
+        r#"{"name":"x"}"#,
+        r#"{"name":"x","query":7}"#,
+        r#"{"name":"x","query":"a","sort":"nope"}"#,
+        r#"{"name":"x","query":"a","sort":"-"}"#,
+        r#"{"name":"x","query":"a","sort":3}"#,
+        "{\"name\":\"a\\nb\",\"query\":\"a\"}",
+        "{\"name\":\"a\\u0007b\",\"query\":\"a\"}",
+        "[]",
+        "\"x\"",
+        "5",
+        "null",
+        "",
+        "not json",
+        "{\"name\":\"x\",",
+    ] {
+        let (code, b) = bad(body);
+        assert_eq!(code, 400, "{}", body);
+        assert!(b["error"].is_string(), "{}", body);
+    }
+    assert_eq!(bad(&serde_json::json!({ "name": "n".repeat(61), "query": "a" }).to_string()).0, 400);
+    assert_eq!(bad(&serde_json::json!({ "name": "é".repeat(61), "query": "a" }).to_string()).0, 400);
+    assert_eq!(bad(&serde_json::json!({ "name": "n", "query": "a".repeat(501) }).to_string()).0, 400);
+    // unparsable query: the parse error, with position
+    let (code, b) = bad(r#"{"name":"x","query":"p:a pyee:b"}"#);
+    assert_eq!((code, b["error"].clone(), b["parse_error"]["pos"].clone()), (400, "parse".into(), 4.into()));
+    let (code, b) = bad(r#"{"name":"x","query":"\"open"}"#);
+    assert_eq!((code, b["error"].clone()), (400, "parse".into()));
+    // nothing was stored or journaled by any refused write
+    assert_eq!(get(&s, "/views").1["rows"].as_array().unwrap().len(), 0);
+    assert!(journal_rows(&path).is_empty());
+    // the empty query is a valid (match-everything) view; a sort key may carry a minus
+    assert_eq!(bad(r#"{"name":"all","query":"","sort":"-payee"}"#).0, 200);
+    assert_eq!(bad(r#"{"name":"empty sort","query":"a","sort":""}"#).1["sort"], Value::Null);
+    // Content-Type is not needed and a body with surrounding whitespace is fine
+    assert_eq!(bad(" \n{\"name\":\"ws\",\"query\":\"a\"}\n ").0, 200);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn views_and_history_without_a_database_or_config_dir() {
+    let s = no_db();
+    assert_eq!(send(&s, "GET", "/views", "").0, 503);
+    assert_eq!(send(&s, "POST", "/views", r#"{"name":"x","query":"a"}"#).0, 503);
+    assert_eq!(send(&s, "DELETE", "/views/1", "").0, 503);
+    assert_eq!(send(&s, "GET", "/history", "").0, 503);
+    assert_eq!(send(&s, "POST", "/history", r#"{"q":"a"}"#).0, 503);
+}
+
+#[test]
+fn history_dedupe_cap_and_file_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, _, s) = slash_state();
+    let file = dir.join("cfg").join("search_history.json");
+    assert_eq!(send(&s, "GET", "/history", ""), (200, serde_json::json!({ "rows": [] })));
+    let rows = |s: &AppState| -> Vec<String> { send(s, "GET", "/history", "").1["rows"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect() };
+
+    assert_eq!(send(&s, "POST", "/history", r#"{"q":"p:a"}"#), (200, serde_json::json!({ "ok": true, "added": true })));
+    send(&s, "POST", "/history", r#"{"q":"a:check"}"#);
+    assert_eq!(rows(&s), vec!["a:check", "p:a"]); // newest first
+    send(&s, "POST", "/history", r#"{"q":"p:a"}"#);
+    assert_eq!(rows(&s), vec!["p:a", "a:check"]); // the older identical entry moved, not duplicated
+    // text is stored as typed (trimmed), not canonicalised
+    send(&s, "POST", "/history", "{\"q\":\"  P:A  amount:>1 \"}");
+    assert_eq!(rows(&s)[0], "P:A  amount:>1");
+
+    // empty and unparsable queries are ignored, not errors
+    for q in ["", "   ", "pyee:x", "\"open"] {
+        let (code, b) = send(&s, "POST", "/history", &serde_json::json!({ "q": q }).to_string());
+        assert_eq!((code, b["added"].clone()), (200, false.into()), "{:?}", q);
+    }
+    assert_eq!(rows(&s).len(), 3);
+    // too long is a 400; exactly 500 characters is accepted
+    assert_eq!(send(&s, "POST", "/history", &serde_json::json!({ "q": "a".repeat(501) }).to_string()).0, 400);
+    assert_eq!(send(&s, "POST", "/history", &serde_json::json!({ "q": "é".repeat(501) }).to_string()).0, 400);
+    assert_eq!(send(&s, "POST", "/history", &serde_json::json!({ "q": "a".repeat(500) }).to_string()).0, 200);
+    assert_eq!(rows(&s)[0].len(), 500);
+    // body errors
+    for body in ["", "x", "[]", "{}", r#"{"q":5}"#, r#"{"q":null}"#, r#"{"query":"a"}"#] {
+        assert_eq!(send(&s, "POST", "/history", body).0, 400, "{}", body);
+    }
+
+    // file: 0600 in a private dir, atomic (no temp files left), holds query text only
+    let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    let leftovers: Vec<_> = std::fs::read_dir(dir.join("cfg")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+    assert_eq!(leftovers, vec!["search_history.json"]);
+    let text = std::fs::read_to_string(&file).unwrap();
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert!(v.as_array().unwrap().iter().all(Value::is_string));
+
+    // cap at 50, newest first
+    for i in 0..60 {
+        assert_eq!(send(&s, "POST", "/history", &serde_json::json!({ "q": format!("p:x{}", i) }).to_string()).0, 200);
+    }
+    let r = rows(&s);
+    assert_eq!(r.len(), 50);
+    assert_eq!((r[0].as_str(), r[49].as_str()), ("p:x59", "p:x10"));
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+
+    // a damaged file reads as empty and is replaced by the next add
+    std::fs::write(&file, "{{ not json").unwrap();
+    assert!(rows(&s).is_empty());
+    send(&s, "POST", "/history", r#"{"q":"a"}"#);
+    assert_eq!(rows(&s), vec!["a"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn new_routes_methods_and_paths() {
+    let (dir, _, s) = slash_state();
+    for (m, p, want) in [
+        ("DELETE", "/views", 405),
+        ("PUT", "/views", 405),
+        ("GET", "/views/1", 405),
+        ("POST", "/views/1", 405),
+        ("PUT", "/views/1", 405),
+        ("DELETE", "/history", 405),
+        ("PUT", "/history", 405),
+        ("POST", "/search/parse", 405),
+        ("DELETE", "/search/parse", 405),
+        ("DELETE", "/transactions", 405),
+        ("DELETE", "/transactions/1", 405),
+        ("DELETE", "/refresh", 405),
+        ("DELETE", "/health", 405),
+        ("DELETE", "/status", 405),
+        ("PATCH", "/accounts", 405),
+        ("GET", "/views/", 404),
+        ("DELETE", "/views/", 404),
+        ("GET", "/views/1/x", 404),
+        ("DELETE", "/views/1/", 404),
+        ("GET", "/history/", 404),
+        ("GET", "/search", 404),
+        ("GET", "/search/parse/", 404),
+        ("GET", "/search/parsex", 404),
+        ("GET", "/viewss", 404),
+        ("GET", "/History", 404),
+    ] {
+        assert_eq!(send(&s, m, p, "").0, want, "{} {}", m, p);
+    }
+    assert_eq!(route_name("/views"), "views");
+    assert_eq!(route_name("/views/12"), "view");
+    assert_eq!(route_name("/history"), "history");
+    assert_eq!(route_name("/search/parse"), "search_parse");
+    // other routes ignore a body
+    assert_eq!(send(&s, "GET", "/health", "{\"x\":1}").0, 200);
+    let _ = std::fs::remove_dir_all(&dir);
+}

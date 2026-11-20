@@ -4,23 +4,25 @@
 //   - docs/KEYS.md is written by hand to match this file. This file is the source of truth.
 //
 // Scopes: "global" (anywhere in the window), "table", "sidebar", "detail" (the focused pane;
-// its scope is checked before "global", so a pane can shadow a global key), "picker" and
-// "prompt" (the overlays, which get keys only while open), "help" (the help overlay).
+// its scope is checked before "global", so a pane can shadow a global key), "search" (the slash
+// search bar, which owns its keys while open), "picker" and "prompt" (the overlays, which get keys
+// only while open), "help" (the help overlay).
 //
 // Token format (token()): a single printable character as typed ("j", "G", "?", "1"), Ctrl as
-// "C-x" (lower case), and "Esc Tab S-Tab Enter Space Up Down Left Right Backspace PgUp PgDown".
+// "C-x" (lower case), and "Esc Tab S-Tab Enter Space Up Down Left Right Backspace Delete PgUp PgDown".
 
 var SCOPE_TITLES = {
   global: "Anywhere",
   table: "Transactions (focus: table)",
   sidebar: "Sidebar (focus: sidebar, Tab)",
   detail: "Detail pane (focus: detail, Tab)",
+  search: "Slash search bar (focus: the / bar; typing is a search)",
   picker: "Pickers: filter menu, sort, sub-pickers",
   prompt: "Typed input (amount, dates, text)",
   help: "This help"
 }
 
-var SCOPE_ORDER = ["global", "table", "sidebar", "detail", "picker", "prompt", "help"]
+var SCOPE_ORDER = ["global", "table", "sidebar", "detail", "search", "picker", "prompt", "help"]
 
 var BINDINGS = [
   // ---- anywhere
@@ -41,7 +43,8 @@ var BINDINGS = [
   { id: "filter.clearAll", scope: "global", keys: ["x"], label: "Clear all filters" },
   { id: "filter.clearLast", scope: "global", keys: ["X"], label: "Clear the newest filter chip" },
   { id: "reload", scope: "global", keys: ["r"], label: "Refresh from Lunch Money, then reload" },
-  { id: "search", scope: "global", keys: ["/"], label: "Slash search (next phase)" },
+  { id: "search.open", scope: "global", keys: ["/"], label: "Slash search bar: type terms, : starts a command (again: reopens it with the active query)" },
+  { id: "views.open", scope: "global", keys: ["v"], label: "Saved views (Enter applies, d deletes)" },
   { id: "quit", scope: "global", keys: ["q"], label: "Quit" },
 
   // ---- transaction table
@@ -56,8 +59,9 @@ var BINDINGS = [
   // ---- sidebar
   { id: "move.down", scope: "sidebar", keys: ["j", "Down"], label: "Move down (headers are skipped)" },
   { id: "move.up", scope: "sidebar", keys: ["k", "Up"], label: "Move up" },
-  { id: "side.apply", scope: "sidebar", keys: ["Enter"], label: "Filter by this account or category (replaces that facet)" },
-  { id: "side.toggle", scope: "sidebar", keys: ["Space"], label: "Toggle this account or category as a filter" },
+  { id: "side.apply", scope: "sidebar", keys: ["Enter"], label: "Filter by this account or category (replaces that facet); a saved view replaces the search" },
+  { id: "side.toggle", scope: "sidebar", keys: ["Space"], label: "Toggle this account or category as a filter; on a saved view: apply it" },
+  { id: "view.delete", scope: "sidebar", keys: ["d"], label: "Delete the saved view under the cursor (asks first)" },
   { id: "filter.clearFacet", scope: "sidebar", keys: ["x"], label: "Clear the account or category filter" },
   { id: "focus.table", scope: "sidebar", keys: ["Esc"], label: "Back to the table" },
 
@@ -67,11 +71,22 @@ var BINDINGS = [
   { id: "detail.close", scope: "detail", keys: ["i", "Enter"], label: "Close the detail pane" },
   { id: "focus.table", scope: "detail", keys: ["Esc"], label: "Back to the table" },
 
-  // ---- pickers (filter menu, sort, sub-pickers); typing filters the list
+  // ---- slash search bar (typing goes to the bar; these are the keys it answers to)
+  { id: "search.cancel", scope: "search", keys: ["Esc"], label: "Cancel: restore the query that was active when the bar opened" },
+  { id: "search.submit", scope: "search", keys: ["Enter"], label: "Pin the query to history and close the bar (on a : command: run it)" },
+  { id: "search.complete", scope: "search", keys: ["Tab"], label: "Accept the highlighted completion (adds a space after it)" },
+  { id: "search.backTab", scope: "search", keys: ["S-Tab"], label: "Previous completion" },
+  { id: "search.up", scope: "search", keys: ["Up"], label: "Previous completion; with no list open, an older pinned query" },
+  { id: "search.down", scope: "search", keys: ["Down"], label: "Next completion; with no list open, a newer pinned query" },
+  { id: "search.clear", scope: "search", keys: ["C-u"], label: "Clear the field (the table shows everything again)" },
+  { id: "search.delWord", scope: "search", keys: ["C-w"], label: "Delete the word before the cursor" },
+
+  // ---- pickers (filter menu, sort, sub-pickers, saved views); typing filters the list
   { id: "pick.down", scope: "picker", keys: ["Down", "C-n", "j"], label: "Next choice (j only while the filter is empty)" },
   { id: "pick.up", scope: "picker", keys: ["Up", "C-p", "k"], label: "Previous choice (k only while the filter is empty)" },
   { id: "pick.choose", scope: "picker", keys: ["Enter"], label: "Choose" },
   { id: "pick.cancel", scope: "picker", keys: ["Esc"], label: "Cancel (back to the filter menu from a sub-picker)" },
+  { id: "pick.delete", scope: "picker", keys: ["Delete", "d"], label: "Delete the highlighted saved view (asks first; d only while the filter is empty)" },
 
   // ---- typed inputs (amount, date range, text)
   { id: "prompt.submit", scope: "prompt", keys: ["Enter"], label: "Apply (empty clears; a bad value is shown inline)" },
@@ -105,6 +120,7 @@ function token(e) {
     case Qt.Key_Left: return "Left"
     case Qt.Key_Right: return "Right"
     case Qt.Key_Backspace: return "Backspace"
+    case Qt.Key_Delete: return "Delete"
     case Qt.Key_PageUp: return "PgUp"
     case Qt.Key_PageDown: return "PgDown"
   }

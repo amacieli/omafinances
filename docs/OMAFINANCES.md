@@ -20,8 +20,9 @@ maintained by `sync.py`. Rust backend + Quickshell (QML) UI, for Omarchy/Hyprlan
 ## API
 
 Loopback JSON API for the UI. Every route needs the per-launch bearer token (401 without it). Paths
-match exactly; the only pattern is `/transactions/<id>`. Unknown path: 404. Known path, wrong
-method: 405. Errors are `{"error": "..."}` and never include payees, amounts or tokens. If the
+match exactly; the only patterns are `/transactions/<id>` and `/views/<id>`. Unknown path: 404.
+Known path, wrong method: 405 (writes are `POST /refresh`, `POST /views`, `DELETE /views/<id>` and
+`POST /history`; everything else is GET). Errors are `{"error": "..."}` and never include payees, amounts or tokens. If the
 database is unavailable or not loaded yet, data routes return 503.
 
 Transactions are held in memory (`src/cache.rs`) and loaded once at startup. Queries run against
@@ -35,6 +36,10 @@ after a sync.
   - `min`/`max` compare the absolute amount. `flow=out` is amount > 0 (spending); `flow=in` is
     amount < 0 (income, refunds).
   - `q` is a case-insensitive substring match over payee, original name and notes. Plain text only.
+  - `s=<slash query>` (see below) ANDs with every filter above. An invalid query returns 400
+    `{"error":"parse","parse_error":{"pos","len","message"}}`; a valid one adds
+    `"search":{"canonical":"..."}` to the response. A `sort:` directive in `s` applies only when the
+    request has neither `sort` nor `dir`; explicit parameters win.
   - Defaults: `sort=date&dir=desc`, `limit=100`, `offset=0`. Ties break by id descending.
   - Bad or duplicate parameters, and unknown parameter names, return 400. Nothing is silently
     ignored.
@@ -52,6 +57,56 @@ after a sync.
   `uncategorized` (transactions with no local category).
 - `POST /refresh`: reloads the cache from the database. Returns `{"ok": true, "transactions": N}`.
   On a failed reload the old cache keeps serving and the response is 500.
+
+### Slash search
+
+The text typed after `/` in the UI. It is parsed in Rust (`src/search/`), compiled to a predicate and
+run over the in-memory cache (about 1 ms for 50k rows). Query text is private: it is never logged,
+and error bodies carry only the parse message.
+
+- Terms are separated by whitespace and ANDed. `-` before a term negates it. `"..."` groups a phrase
+  (`\"` for a literal quote). A bare word is a case-insensitive substring over payee, original name
+  and notes. `field:value` terms accept a comma list meaning OR (`p:amazon,costco`).
+- `p:` (`payee`) payee or original name; `a:` (`acct`, `account`) account name; `n:` (`note`,
+  `notes`) notes; `lm:` Lunch Money category name; `id:` exact ids.
+- `c:` (`cat`, `category`) local category path. `c:home` is Home and all descendants; `c:home/maint`
+  matches path segments by case-insensitive prefix (Home › Maintenance); `c:none` is no local
+  category. Quote paths with spaces: `c:"home/sub 0"`. The completer inserts exactly this form.
+- `d:` (`date`): `2026-10-05`, `2026-10`, `2026`, ranges `2026-10-01..2026-11-15` (open ends allowed),
+  comparators `>2026-01-01 <2026-01-01 >= <=`, presets `today yesterday this-week last-week
+  this-month last-month this-quarter last-quarter ytd this-year last-year` (weeks start Monday),
+  relative `7d` (last 7 days, today included), `>30d` (newer than 30 days ago), `<30d`, `3m`, `1y`,
+  `1w`. Relative dates resolve against the local date.
+- `amount:` (`amt`), and a bare number with an operator or range (`>50 >=50 <20 10..50 100 =100`):
+  compares the absolute amount. `$` and thousands commas are accepted (`>$1,200`). A comma followed by
+  exactly three digits is a thousands separator, any other comma is OR (`amount:10,20`).
+- `is:` `recurring pending transfer income expense uncat categorized`. `income` is amount < 0,
+  `expense` is amount > 0, `transfer` is a Lunch Money category containing "transfer".
+- `sort:date|amount|payee|account|category`, `-` before the key for descending (`sort:-amount`). It is a
+  directive, not a filter; once per query.
+- Errors name the byte position and length and suggest a fix (`unknown field "pyee"; did you mean
+  "p"?`). Rows whose stored date is not a valid date never match a `d:` term.
+
+Routes:
+
+- `GET /search/parse?q=<text>&pos=<cursor byte offset, default end>`: always 200. `ok`, `canonical`
+  (null if invalid), `terms` (`text, neg, field, value`), `sort` (e.g. `"-amount"` or null),
+  `parse_error` (null or `pos, len, message`), `matched` (rows matching, null if invalid or no
+  database) and `completions: {start, end, items: [{insert, label, detail}]}` (at most 12). The UI
+  replaces `text[start:end]` with `insert`. Completion covers field names, then values: payees
+  (most frequent first), accounts, category paths, date presets, `is:` values, sort keys.
+- `GET /views`: `rows` of `id, name, query, sort, position`, by position then name.
+  `POST /views` with `{"name","query","sort"?}` upserts by name (case-insensitive) and returns the row.
+  400 for an empty or over-60-character name, control characters, a non-parsing query or an unknown
+  sort. `DELETE /views/<id>` returns `{"ok":true}`, 404 if unknown. Every write is journaled as a
+  `change_batch` (kind `view`) with one `change_item` (entity `saved_view`, field `row`, old and new
+  row as JSON) for the undo phase.
+- `GET /history`: `rows` of query strings, newest first, at most 50. `POST /history` with `{"q"}`
+  adds it, moving an older identical entry to the front; empty or unparsable queries are ignored
+  (`"added": false`), more than 500 characters is 400. Stored as query text only in
+  `<config dir>/search_history.json` (mode 0600, atomic replace).
+- Request bodies (`POST /views`, `POST /history`) must be a JSON object of at most 64 KiB. No
+  Content-Type is needed (the UI sends `text/plain`). Anything else is 400, over the limit 413.
 
 Amounts follow the Lunch Money convention: positive is money out, negative is money in.
 

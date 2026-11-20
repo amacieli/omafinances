@@ -49,6 +49,9 @@ pub struct Txn {
     pub payee_lc: String,
     pub original_lc: String,
     pub notes_lc: String,
+    /// Lowercased account display name and Lunch Money category name ("" when absent).
+    pub account_lc: String,
+    pub lm_lc: String,
     /// Dense ranks (1-based; 0 = none) used as integer sort keys.
     pub key_payee: u32,
     pub key_account: u32,
@@ -99,6 +102,8 @@ pub struct Cache {
     pub categories: Vec<CatNode>,
     /// Transactions with no local category.
     pub uncategorized: usize,
+    /// Distinct non-empty payees with their transaction counts, most frequent first (ties by name).
+    pub payee_freq: Vec<(String, usize)>,
     pos_by_id: HashMap<i64, u32>,
 }
 
@@ -176,7 +181,16 @@ impl Cache {
             .collect();
         accounts.sort_by(|x, y| (x.name.to_lowercase(), x.id).cmp(&(y.name.to_lowercase(), y.id)));
 
-        Cache { txns, accounts, categories, uncategorized, pos_by_id }
+        let mut freq: HashMap<&str, usize> = HashMap::new();
+        for t in &txns {
+            if !t.payee.is_empty() {
+                *freq.entry(t.payee.as_str()).or_insert(0) += 1;
+            }
+        }
+        let mut payee_freq: Vec<(String, usize)> = freq.into_iter().map(|(p, n)| (p.to_string(), n)).collect();
+        payee_freq.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        Cache { txns, accounts, categories, uncategorized, payee_freq, pos_by_id }
     }
 
     /// Preorder position of a category id, if it is in the tree.
@@ -226,6 +240,8 @@ fn convert(r: RawTxn, pos_by_id: &HashMap<i64, u32>) -> Txn {
         original_name: r.original_name,
         notes_lc: r.notes.as_deref().unwrap_or("").to_lowercase(),
         notes: r.notes,
+        account_lc: r.account.as_deref().unwrap_or("").to_lowercase(),
+        lm_lc: r.lm_category.as_deref().unwrap_or("").to_lowercase(),
         amount: r.amount,
         currency: r.currency.unwrap_or_default(),
         account_id: r.account_id,

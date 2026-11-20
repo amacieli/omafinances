@@ -1,6 +1,7 @@
 //! Encrypted (SQLCipher) database access. One `Mutex<Connection>`: key derivation is slow, so we
 //! open once. Journal mode is left alone (the file lives on NFS; no WAL).
 pub mod migrations;
+pub mod views;
 
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};

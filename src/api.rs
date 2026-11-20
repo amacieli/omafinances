@@ -1,7 +1,8 @@
 //! The UI's JSON API: a pure router, so it can be tested without sockets.
 //!
-//! Paths are matched exactly (no prefix or substring matching), except `/transactions/<id>`.
-//! Unknown paths are 404; a known path with the wrong method is 405 (`POST` only on `/refresh`).
+//! Paths are matched exactly (no prefix or substring matching), except `/transactions/<id>` and `/views/<id>`.
+//! Unknown paths are 404; a known path with the wrong method is 405 (writes: `POST /refresh`, `POST /views`,
+//! `DELETE /views/<id>`, `POST /history`).
 //! Data routes read the in-memory `Cache`: 503 when the database is unavailable or the cache has not
 //! been loaded. Bodies are `{"error": "..."}` on failure. Errors never carry payee, amount or token data.
 
@@ -9,9 +10,14 @@ use crate::cache::{AccountRow, CatNode, Cache, Txn};
 use crate::config::Settings;
 use crate::db::Db;
 use crate::query::{self, Query};
+use crate::search;
 use anyhow::{anyhow, Result};
+use chrono::NaiveDate;
 use serde_json::{json, Value};
-use std::sync::{RwLock, RwLockReadGuard};
+use std::path::PathBuf;
+use std::sync::{Mutex, RwLock, RwLockReadGuard};
+
+mod slash;
 
 /// Everything the routes read. Built once at startup; shared by the workers.
 pub struct AppState {
@@ -21,11 +27,34 @@ pub struct AppState {
     pub version: &'static str,
     /// The in-memory mirror; `None` until the first successful load.
     cache: RwLock<Option<Cache>>,
+    /// Where `search_history.json` lives; `None` means history routes answer 503.
+    pub config_dir: Option<PathBuf>,
+    /// Fixed "today" for relative dates (tests); `None` uses the local date.
+    today_override: Option<NaiveDate>,
+    /// Serialises history read-modify-write.
+    history_lock: Mutex<()>,
 }
 
 impl AppState {
     pub fn new(settings: Settings, db: Result<Db, String>, version: &'static str) -> AppState {
-        AppState { settings, db, version, cache: RwLock::new(None) }
+        AppState { settings, db, version, cache: RwLock::new(None), config_dir: None, today_override: None, history_lock: Mutex::new(()) }
+    }
+
+    /// Set the directory that holds the search history file.
+    pub fn with_config_dir(mut self, dir: PathBuf) -> AppState {
+        self.config_dir = Some(dir);
+        self
+    }
+
+    /// Pin "today" (relative dates in slash search); for tests.
+    pub fn with_today(mut self, today: NaiveDate) -> AppState {
+        self.today_override = Some(today);
+        self
+    }
+
+    /// The date relative terms resolve against: the local date unless pinned.
+    pub fn today(&self) -> NaiveDate {
+        self.today_override.unwrap_or_else(|| chrono::Local::now().date_naive())
     }
 
     /// Reload every transaction, account and category from the database and swap the cache in.
@@ -54,6 +83,10 @@ pub fn route_name(path: &str) -> &'static str {
         Route::Accounts => "accounts",
         Route::Categories => "categories",
         Route::Refresh => "refresh",
+        Route::SearchParse => "search_parse",
+        Route::Views => "views",
+        Route::View(_) => "view",
+        Route::History => "history",
         Route::Unknown => "unknown",
     }
 }
@@ -67,6 +100,10 @@ enum Route<'a> {
     Accounts,
     Categories,
     Refresh,
+    SearchParse,
+    Views,
+    View(&'a str),
+    History,
     Unknown,
 }
 
@@ -79,10 +116,21 @@ fn route(path: &str) -> Route<'_> {
         "/accounts" => Route::Accounts,
         "/categories" => Route::Categories,
         "/refresh" => Route::Refresh,
-        _ => match path.strip_prefix("/transactions/") {
-            Some(rest) if !rest.is_empty() && !rest.contains('/') => Route::Transaction(rest),
-            _ => Route::Unknown,
-        },
+        "/search/parse" => Route::SearchParse,
+        "/views" => Route::Views,
+        "/history" => Route::History,
+        _ => {
+            if let Some(rest) = path.strip_prefix("/transactions/") {
+                if !rest.is_empty() && !rest.contains('/') {
+                    return Route::Transaction(rest);
+                }
+            } else if let Some(rest) = path.strip_prefix("/views/") {
+                if !rest.is_empty() && !rest.contains('/') {
+                    return Route::View(rest);
+                }
+            }
+            Route::Unknown
+        }
     }
 }
 
@@ -99,15 +147,23 @@ fn money(x: f64) -> f64 {
     (x * 100.0).round() / 100.0
 }
 
-/// Route one request. Returns the status code and the JSON body.
+/// Route one request without a body (see `handle_body`).
 pub fn handle(state: &AppState, method: &str, path: &str, query: &str) -> (u16, Value) {
+    handle_body(state, method, path, query, b"")
+}
+
+/// Route one request. Returns the status code and the JSON body. `body` is the raw request body
+/// (at most `http::MAX_BODY` bytes); only `POST /views` and `POST /history` read it.
+pub fn handle_body(state: &AppState, method: &str, path: &str, query: &str, body: &[u8]) -> (u16, Value) {
     let r = route(path);
-    let want = match r {
+    let allowed: &[&str] = match r {
         Route::Unknown => return error(404, "not found"),
-        Route::Refresh => "POST",
-        _ => "GET",
+        Route::Refresh => &["POST"],
+        Route::Views | Route::History => &["GET", "POST"],
+        Route::View(_) => &["DELETE"],
+        _ => &["GET"],
     };
-    if method != want {
+    if !allowed.contains(&method) {
         return error(405, "method not allowed");
     }
     match r {
@@ -119,6 +175,12 @@ pub fn handle(state: &AppState, method: &str, path: &str, query: &str) -> (u16, 
         Route::Accounts => accounts(state),
         Route::Categories => categories(state),
         Route::Refresh => refresh(state),
+        Route::SearchParse => slash::search_parse(state, query),
+        Route::Views if method == "POST" => slash::view_save(state, body),
+        Route::Views => slash::views_list(state),
+        Route::View(id) => slash::view_delete(state, id),
+        Route::History if method == "POST" => slash::history_add(state, body),
+        Route::History => slash::history_list(state),
         Route::Unknown => error(404, "not found"),
     }
 }
@@ -184,26 +246,46 @@ fn txn_row(cache: &Cache, t: &Txn) -> Value {
 }
 
 fn transactions(state: &AppState, qs: &str) -> (u16, Value) {
-    let q = match Query::parse(qs) {
+    let (rest, s) = match slash::take_search(qs) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let mut q = match Query::parse(&rest) {
         Ok(q) => q,
         Err(msg) => return error(400, &msg),
     };
+    let search = match s.as_deref().map(|s| search::parse(s, state.today())) {
+        None => None,
+        Some(Ok(s)) => Some(s),
+        Some(Err(e)) => return slash::parse_error_body(&e),
+    };
+    // A sort directive in the search applies only when the request does not sort itself.
+    if let Some((key, dir)) = search.as_ref().and_then(|s| s.sort) {
+        let explicit = rest.split('&').any(|kv| matches!(kv.split_once('=').map_or(kv, |(k, _)| k), "sort" | "dir"));
+        if !explicit {
+            q.sort = key.to_query();
+            q.desc = dir == search::Dir::Desc;
+        }
+    }
     let guard = state.read_cache();
     let Some(cache) = guard.as_ref() else {
         return unavailable();
     };
-    let r = query::run(cache, &q);
+    let compiled = search.as_ref().filter(|s| !s.terms.is_empty()).map(|s| s.compile(cache));
+    let pred = compiled.as_ref().map(|c| move |t: &Txn| c.matches(t));
+    let r = query::run_with(cache, &q, pred.as_ref().map(|p| p as &dyn Fn(&Txn) -> bool));
     let rows: Vec<Value> = r.rows.iter().map(|t| txn_row(cache, t)).collect();
-    (
-        200,
-        json!({
-            "all": cache.txns.len(),
-            "total": r.total,
-            "sum_out": money(r.sum_out),
-            "sum_in": money(r.sum_in),
-            "rows": rows,
-        }),
-    )
+    let mut body = json!({
+        "all": cache.txns.len(),
+        "total": r.total,
+        "sum_out": money(r.sum_out),
+        "sum_in": money(r.sum_in),
+        "rows": rows,
+    });
+    if let (Some(s), Some(o)) = (&search, body.as_object_mut()) {
+        o.insert("search".to_string(), json!({ "canonical": s.canonical() }));
+    }
+    (200, body)
 }
 
 fn transaction(state: &AppState, id: &str) -> (u16, Value) {

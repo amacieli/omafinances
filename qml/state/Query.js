@@ -10,6 +10,7 @@
 //   amountLabel               the amount as typed, for the chip ("10..50", ">100", "<20")
 //   flow                      "out" (money out) | "in" (money in) | ""
 //   text                      contains-text
+//   slash                     the active slash query, canonical form from /search/parse ("" = none)
 
 function emptyFilter() {
   return {
@@ -18,7 +19,8 @@ function emptyFilter() {
     from: "", to: "",
     min: "", max: "", amountLabel: "",
     flow: "",
-    text: ""
+    text: "",
+    slash: ""
   }
 }
 
@@ -117,6 +119,7 @@ function parseText(text) {
 // Filter chips in display order. Each has an id used by clearChip().
 function chips(f) {
   var out = []
+  if (f.slash) out.push({ id: "search", label: f.slash, kind: "search" })
   if (f.account) out.push({ id: "account", label: "account: " + (f.accountLabel || f.account) })
   if (f.category) out.push({ id: "category", label: "category: " + (f.category === "none" ? "uncategorized" : (f.categoryLabel || f.category)) })
   if (f.from || f.to) out.push({ id: "date", label: "date: " + (f.from === f.to ? f.from : f.from + ".." + f.to) })
@@ -137,6 +140,7 @@ function clearChip(f, id) {
   else if (id === "amount") { n.min = ""; n.max = ""; n.amountLabel = "" }
   else if (id === "flow") n.flow = ""
   else if (id === "text") n.text = ""
+  else if (id === "search") n.slash = ""
   return n
 }
 
@@ -151,6 +155,7 @@ function buildQuery(f, sort, offset, limit) {
   if (f.max !== "") p.push("max=" + encodeURIComponent(f.max))
   if (f.flow) p.push("flow=" + encodeURIComponent(f.flow))
   if (f.text) p.push("q=" + encodeURIComponent(f.text))
+  if (f.slash) p.push("s=" + encodeURIComponent(f.slash))
   p.push("limit=" + limit)
   p.push("offset=" + offset)
   return "/transactions?" + p.join("&")

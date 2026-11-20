@@ -6,4 +6,5 @@ pub mod config;
 pub mod db;
 pub mod http;
 pub mod query;
+pub mod search;
 pub mod secrets;

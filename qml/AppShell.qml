@@ -7,6 +7,8 @@ import "state/Query.js" as Query
 import "keys/Keymap.js" as Keymap
 import "common"
 import "views"
+import "common/Fuzzy.js" as Fuzzy
+import "state/Search.js" as Search
 
 // OmaFinances window content: header, filter chips, sidebar | transaction table | detail, footer.
 // Read-only. keys/Keymap.js is the source of truth for every key (docs/KEYS.md follows it).
@@ -74,11 +76,34 @@ FocusScope {
   property string promptCtx: ""  // "amount" | "text" | "date"
   property var presetList: []
 
+  // ------------------------------------------------------------------ slash search and views
+  property var viewList: []          // raw /views rows: {id, name, query, sort, position}
+  property var historyRows: []       // GET /history, newest first
+  property int histIndex: -1         // -1: the draft; otherwise the row of historyRows shown
+  property string histDraft: ""
+  property int parseGen: 0           // bumped on every bar edit; older /search/parse replies are dropped
+  property var parsed: null          // Search.fromParse() of the text parsedText
+  property string parsedText: ""
+  property bool enterPending: false  // Enter was pressed before the reply for the text arrived
+  property string cmdError: ""       // error of the last : command, shown in the hint row
+  property var completionList: []    // [{insert, label, detail}] shown under the cursor
+  property int completionIndex: 0
+  property int completionStart: 0
+  property int completionEnd: 0
+  property string completionsFor: "" // the text and cursor the list was computed for
+  property int completionsCursor: -1
+  property string openedSlash: ""    // the active query when the bar opened (Esc restores it)
+  property var openedSort: null
+  property string pendingViewId: ""
+  property string viewConfirmFrom: ""  // "views" | "sidebar": where the delete confirm came from
+  readonly property bool searchOpen: searchBar.open
+  readonly property bool commandMode: searchBar.text.charAt(0) === ":"
+
   // ------------------------------------------------------------------ models
   ListModel { id: rows }
   ListModel { id: sideRows }
 
-  readonly property bool overlayOpen: picker.open || prompt.open || help.open
+  readonly property bool overlayOpen: picker.open || prompt.open || help.open || searchBar.open
 
   // ------------------------------------------------------------------ helpers
   function parseJson(text) {
@@ -88,6 +113,13 @@ FocusScope {
   function describeHttp(xhr) {
     if (xhr.status === 401) return "backend rejected the session token (401)"
     return "HTTP " + xhr.status
+  }
+
+  // The backend's {error} text when it sent one, else describeHttp().
+  function httpError(xhr) {
+    var j = parseJson(xhr.responseText)
+    if (j && j.error) return String(j.error)
+    return describeHttp(xhr)
   }
 
   function setUnreachable() {
@@ -191,25 +223,35 @@ FocusScope {
     })
   }
 
+  function isSideSkip(r) { return r.rowKind === "header" || r.rowKind === "note" }
+
   function rebuildSidebar() {
     sideRows.clear()
-    sideRows.append({ rowKind: "header", key: "", label: "Accounts", depth: 0, count: 0, sel: false })
+    sideRows.append({ rowKind: "header", key: "", label: "Views", depth: 0, count: 0, sel: false, query: "" })
+    if (viewList.length === 0)
+      sideRows.append({ rowKind: "note", key: "", label: "none yet: type / then :save <name>", depth: 0, count: 0, sel: false, query: "" })
+    for (var v = 0; v < viewList.length; v++) {
+      var vw = viewList[v]
+      sideRows.append({ rowKind: "view", key: String(vw.id), label: String(vw.name), depth: 0, count: 0, sel: false,
+                        query: String(vw.query || "") })
+    }
+    sideRows.append({ rowKind: "header", key: "", label: "Accounts", depth: 0, count: 0, sel: false, query: "" })
     for (var i = 0; i < accountList.length; i++) {
       var a = accountList[i]
       sideRows.append({ rowKind: "account", key: String(a.id), label: String(a.name || a.id),
-                        depth: 0, count: Number(a.count) || 0, sel: false })
+                        depth: 0, count: Number(a.count) || 0, sel: false, query: "" })
     }
-    sideRows.append({ rowKind: "header", key: "", label: "Categories", depth: 0, count: 0, sel: false })
+    sideRows.append({ rowKind: "header", key: "", label: "Categories", depth: 0, count: 0, sel: false, query: "" })
     for (var j = 0; j < categoryList.length; j++) {
       var c = categoryList[j]
       sideRows.append({ rowKind: "category", key: String(c.id), label: String(c.name || c.id),
-                        depth: Number(c.depth) || 0, count: Number(c.count_subtree) || 0, sel: false })
+                        depth: Number(c.depth) || 0, count: Number(c.count_subtree) || 0, sel: false, query: "" })
     }
     sideRows.append({ rowKind: "uncat", key: "none", label: "Uncategorized", depth: 0,
-                      count: uncategorizedCount, sel: false })
+                      count: uncategorizedCount, sel: false, query: "" })
     refreshSideSelection()
     if (sideIndex < 1 || sideIndex >= sideRows.count) sideIndex = 1
-    if (sideRows.get(sideIndex).rowKind === "header") moveSide(1)
+    if (isSideSkip(sideRows.get(sideIndex))) moveSide(1)
   }
 
   // Marks the active account or category in the sidebar. Called after every filter change.
@@ -220,13 +262,14 @@ FocusScope {
       if (r.rowKind === "account") on = filter.account !== "" && filter.account === r.key
       else if (r.rowKind === "category") on = filter.category !== "" && filter.category === r.key
       else if (r.rowKind === "uncat") on = filter.category === "none"
+      else if (r.rowKind === "view") on = filter.slash !== "" && filter.slash === r.query
       if (r.sel !== on) sideRows.setProperty(i, "sel", on)
     }
   }
 
   function moveSide(dir) {
     var i = sideIndex + dir
-    while (i >= 0 && i < sideRows.count && sideRows.get(i).rowKind === "header") i += dir
+    while (i >= 0 && i < sideRows.count && isSideSkip(sideRows.get(i))) i += dir
     if (i >= 0 && i < sideRows.count) sideIndex = i
   }
 
@@ -234,7 +277,8 @@ FocusScope {
   function sideActivate(toggle) {
     if (sideIndex < 0 || sideIndex >= sideRows.count) return
     var r = sideRows.get(sideIndex)
-    if (r.rowKind === "header") return
+    if (isSideSkip(r)) return
+    if (r.rowKind === "view") { applyViewId(r.key); return }
     var f = Object.assign({}, filter)
     if (r.rowKind === "account") {
       if (toggle && f.account === r.key) { f.account = ""; f.accountLabel = "" }
@@ -557,6 +601,14 @@ FocusScope {
   function onPickerChosen(key) {
     var ctx = pickerCtx
     var f
+    if (ctx === "views") { applyViewId(key); return }
+    if (ctx === "viewConfirm") {
+      var from = viewConfirmFrom
+      var dv = viewById(pendingViewId)
+      if (key === "yes" && dv) deleteView(dv, function() { if (from === "views") openViewsPicker() })
+      else if (from === "views") openViewsPicker()
+      return
+    }
     if (ctx === "filter") {
       if (key === "account") openAccountPicker()
       else if (key === "category") openCategoryPicker()
@@ -602,6 +654,8 @@ FocusScope {
   }
 
   function onPickerCancelled() {
+    if (pickerCtx === "views") return
+    if (pickerCtx === "viewConfirm") { if (viewConfirmFrom === "views") openViewsPicker(); return }
     // A sub-picker opened from the filter menu goes back to that menu.
     if (pickerCtx !== "filter" && pickerCtx !== "sort") openFilterMenu()
   }
@@ -621,6 +675,7 @@ FocusScope {
     var a = root.Window.activeFocusItem
     if (a && a !== root) a.focus = false
     picker.focus = false; prompt.focus = false; help.focus = false
+    searchBar.field.focus = false
     root.forceActiveFocus()
   }
 
@@ -661,6 +716,7 @@ FocusScope {
     serverStatus = null
     loadStatus()
     loadFacets()
+    loadViews()
     reloadRows(cursor)
   }
 
@@ -674,6 +730,383 @@ FocusScope {
       toast("refreshed: " + Query.fmtCount(j ? j.transactions : 0) + " transactions")
       reload()
     })
+  }
+
+  // ------------------------------------------------------------------ slash search
+  // The bar is a view of this state. Replies from /search/parse apply the query live (the last
+  // good one stays when the text does not parse); Enter pins it; Esc restores the query from
+  // when the bar opened.
+
+  readonly property string searchHelpHint: "words match payee or notes  ·  p: payee  a: account  c: category  d: date  is:  sort:  ·  -term excludes  ·  :help"
+  readonly property string commandsHint: "commands: :save <name>  :view <name>  :views  :delete <name>  :clear  :help"
+
+  // Applies a canonical query and, when given, a sort as one change of the table.
+  function applySlash(canonical, sortObj) {
+    var sortChanged = sortObj !== null && sortObj !== undefined
+                      && (sortObj.key !== sort.key || sortObj.dir !== sort.dir)
+    if (sortChanged) sort = { key: sortObj.key, dir: sortObj.dir }
+    if (canonical === filter.slash && !sortChanged) return
+    var f = Object.assign({}, filter)
+    f.slash = canonical
+    applyFilter(f)
+  }
+
+  function openSearch() {
+    if (searchBar.open) return
+    openedSlash = filter.slash
+    openedSort = { key: sort.key, dir: sort.dir }
+    histIndex = -1
+    histDraft = ""
+    parsed = null
+    parsedText = ""
+    cmdError = ""
+    enterPending = false
+    loadHistory()
+    searchBar.show(filter.slash)
+    refreshBar()
+  }
+
+  // Esc (restore = true) puts back the query and sort from when the bar opened; Enter and the
+  // commands close without restoring.
+  function closeSearch(restore) {
+    if (!searchBar.open) return
+    parseTimer.stop()
+    if (restore) applySlash(openedSlash, openedSort)
+    searchBar.hide()
+    zone = "table"
+  }
+
+  function onUserEdit() {
+    histIndex = -1
+    cmdError = ""
+  }
+
+  function scheduleParse() {
+    parseGen++
+    if (!searchBar.open) return
+    if (commandMode) {
+      parseTimer.stop()
+      refreshCommandCompletions()
+      refreshBar()
+      return
+    }
+    parseTimer.restart()
+    refreshBar()
+  }
+
+  function setCompletions(text, cur, items, start, end) {
+    completionsFor = text
+    completionsCursor = cur
+    completionList = items
+    completionStart = start
+    completionEnd = end
+    if (completionIndex >= items.length) completionIndex = 0
+  }
+
+  // A list is only acted on when it was computed for the current text and cursor.
+  function completionFresh() {
+    return completionsFor === searchBar.text && completionsCursor === searchBar.cursor
+  }
+
+  function refreshCommandCompletions() {
+    var t = searchBar.text
+    var cur = searchBar.cursor
+    var cc = Search.commandCompletions(t, cur, viewNames())
+    setCompletions(t, cur, cc ? cc.items : [], cc ? cc.start : 0, cc ? cc.end : 0)
+  }
+
+  function sendParse() {
+    if (!searchBar.open || commandMode) return
+    var text = searchBar.text
+    var cur = searchBar.cursor
+    var gen = parseGen
+    if (text.trim() === "") {
+      parsed = { ok: true, canonical: "", matched: null, sortValue: null, error: null }
+      parsedText = text
+      setCompletions(text, cur, [], 0, 0)
+      applySlash("", null)
+      refreshBar()
+      return
+    }
+    var pos = Search.byteOffset(text, cur)
+    Backend.request("GET", "/search/parse?q=" + encodeURIComponent(text) + "&pos=" + pos, function(xhr) {
+      if (gen !== root.parseGen || !searchBar.open) return
+      if (xhr.status === 0) { root.hintFail("search: backend not responding"); return }
+      var j = root.parseJson(xhr.responseText)
+      if (xhr.status !== 200 || !j) { root.hintFail("search: " + root.httpError(xhr)); return }
+      var p = Search.fromParse(text, j)
+      root.parsed = p
+      root.parsedText = text
+      root.setCompletions(text, cur, p.completions.items, p.completions.start, p.completions.end)
+      if (p.ok) {
+        var sv = p.sortValue !== null ? Search.sortFromValue(p.sortValue) : null
+        root.applySlash(p.canonical, sv)
+      }
+      root.refreshBar()
+      if (root.enterPending) {
+        root.enterPending = false
+        if (searchBar.text === text) root.submitSearch()
+      }
+    })
+  }
+
+  function hintFail(msg) {
+    searchBar.hint = msg
+    searchBar.hintError = true
+    searchBar.errorStart = -1
+    searchBar.errorEnd = -1
+  }
+
+  // Everything the bar shows is derived here from the state above.
+  function refreshBar() {
+    var t = searchBar.text
+    searchBar.completions = completionList
+    searchBar.completionIndex = completionIndex
+    searchBar.completionStart = completionStart
+    if (commandMode) {
+      searchBar.errorStart = -1
+      searchBar.errorEnd = -1
+      var pc = Search.parseCommand(t)
+      var showErr = cmdError !== "" || (pc !== null && pc.error && /\s/.test(t))
+      if (showErr) {
+        searchBar.hint = cmdError !== "" ? cmdError : pc.error
+        searchBar.hintError = true
+      } else if (pc !== null && pc.cmd) {
+        searchBar.hint = ":" + pc.cmd + "  " + Search.COMMAND_HELP[pc.cmd]
+        searchBar.hintError = false
+      } else {
+        searchBar.hint = commandsHint
+        searchBar.hintError = false
+      }
+      return
+    }
+    if (t.trim() === "") {
+      searchBar.hint = searchHelpHint
+      searchBar.hintError = false
+      searchBar.errorStart = -1
+      searchBar.errorEnd = -1
+      return
+    }
+    if (parsed === null) {
+      searchBar.hint = "searching..."
+      searchBar.hintError = false
+      return
+    }
+    if (parsed.error) {
+      searchBar.hint = parsed.error.message
+      searchBar.hintError = true
+      searchBar.errorStart = parsed.error.start
+      searchBar.errorEnd = parsed.error.end
+      return
+    }
+    searchBar.errorStart = -1
+    searchBar.errorEnd = -1
+    searchBar.hintError = false
+    if (parsed.canonical === "") { searchBar.hint = searchHelpHint; return }
+    var m = parsed.matched !== null ? Query.fmtCount(parsed.matched) + " matched  ·  " : ""
+    searchBar.hint = m + parsed.canonical
+  }
+
+  function moveCompletion(d) {
+    var n = completionList.length
+    if (n === 0) return
+    completionIndex = (completionIndex + d + n) % n
+    searchBar.completionIndex = completionIndex
+  }
+
+  // Replaces the token under the cursor with the completion and adds a space after it.
+  function acceptCompletion(i) {
+    if (!completionFresh() || i < 0 || i >= completionList.length) return
+    var r = Search.replaceRange(searchBar.text, completionStart, completionEnd, completionList[i].insert)
+    completionList = []
+    searchBar.text = r.text
+    searchBar.cursor = r.cursor
+  }
+
+  function walkHistory(dir) {
+    var r = Search.walkHistory(histIndex, histDraft, historyRows, searchBar.text, dir)
+    if (r === null) return
+    histIndex = r.index
+    histDraft = r.draft
+    searchBar.text = r.text
+    searchBar.cursor = r.text.length
+  }
+
+  function onSearchAction(id) {
+    if (id === "search.cancel") closeSearch(true)
+    else if (id === "search.submit") submitSearch()
+    else if (id === "search.complete") { if (completionList.length > 0) acceptCompletion(completionIndex) }
+    else if (id === "search.backTab") moveCompletion(-1)
+    else if (id === "search.up") { if (completionList.length > 0) moveCompletion(-1); else walkHistory(-1) }
+    else if (id === "search.down") { if (completionList.length > 0) moveCompletion(1); else walkHistory(1) }
+    else if (id === "search.clear") { searchBar.text = ""; searchBar.cursor = 0 }
+    else if (id === "search.delWord") {
+      var r = Search.deleteWordBack(searchBar.text, searchBar.cursor)
+      searchBar.text = r.text
+      searchBar.cursor = r.cursor
+    }
+  }
+
+  function submitSearch() {
+    var t = searchBar.text
+    if (commandMode) { runCommand(t); return }
+    if (t.trim() === "") { closeSearch(false); applySlash("", null); return }
+    if (parsedText !== t || parsed === null) {
+      enterPending = true
+      parseTimer.stop()
+      sendParse()
+      return
+    }
+    if (parsed.error) { refreshBar(); return }
+    applySlash(parsed.canonical, parsed.sortValue !== null ? Search.sortFromValue(parsed.sortValue) : null)
+    Backend.json("POST", "/history", { q: t }, function(xhr) {
+      if (xhr.status === 200) loadHistory()
+    })
+    closeSearch(false)
+  }
+
+  function runCommand(t) {
+    var pc = Search.parseCommand(t)
+    if (pc === null) return
+    if (pc.error) { cmdError = pc.error; refreshBar(); return }
+    if (pc.cmd === "save") saveView(pc.arg)
+    else if (pc.cmd === "view") applyViewByName(pc.arg)
+    else if (pc.cmd === "views") { closeSearch(false); openViewsPicker() }
+    else if (pc.cmd === "delete") deleteViewByName(pc.arg)
+    else if (pc.cmd === "clear") { closeSearch(false); clearAll() }
+    else if (pc.cmd === "help") { closeSearch(false); help.focusedZone = zone; help.show() }
+  }
+
+  // The backend's {error} text when it sent one, else the status.
+  function loadHistory() {
+    Backend.request("GET", "/history", function(xhr) {
+      if (xhr.status !== 200) return
+      var j = parseJson(xhr.responseText)
+      if (j && j.rows) historyRows = j.rows
+    })
+  }
+
+  // ------------------------------------------------------------------ saved views
+  function viewById(id) {
+    for (var i = 0; i < viewList.length; i++) if (String(viewList[i].id) === String(id)) return viewList[i]
+    return null
+  }
+
+  function viewNames() {
+    var out = []
+    for (var i = 0; i < viewList.length; i++) out.push(String(viewList[i].name))
+    return out
+  }
+
+  function sortLabelOf(v) {
+    var s = v.sort ? Search.sortFromValue(v.sort) : null
+    if (!s) return ""
+    return Query.sortInfo(s.key).label.toLowerCase() + " " + Query.arrow(s)
+  }
+
+  function loadViews(done) {
+    Backend.request("GET", "/views", function(xhr) {
+      if (xhr.status === 200) {
+        var j = parseJson(xhr.responseText)
+        if (j && j.rows) { viewList = j.rows; rebuildSidebar() }
+      }
+      if (done) done(xhr.status)
+    })
+  }
+
+  // Saves the active query and sort under name. Errors stay in the bar.
+  function saveView(name) {
+    if (filter.slash === "") {
+      cmdError = "nothing to save: no query is active; type a search first"
+      refreshBar()
+      return
+    }
+    Backend.json("POST", "/views", { name: name, query: filter.slash, sort: Search.sortToValue(sort) }, function(xhr) {
+      if (xhr.status === 0) { cmdError = "backend not responding"; refreshBar(); return }
+      var j = parseJson(xhr.responseText)
+      if (xhr.status !== 200 || !j) { cmdError = httpError(xhr); refreshBar(); return }
+      closeSearch(false)
+      toast("saved view '" + name + "'")
+      loadViews()
+    })
+  }
+
+  function applyViewId(id) {
+    var v = viewById(id)
+    if (!v) return
+    applySlash(String(v.query || ""), v.sort ? Search.sortFromValue(v.sort) : null)
+    toast("view: " + v.name)
+  }
+
+  function applyViewByName(name) {
+    var entries = []
+    for (var i = 0; i < viewList.length; i++)
+      entries.push({ key: String(viewList[i].id), label: String(viewList[i].name), detail: "" })
+    var hits = Fuzzy.filterEntries(entries, name)
+    if (hits.length === 0) { cmdError = "no view matches '" + name + "'"; refreshBar(); return }
+    var id = hits[0].key
+    closeSearch(false)
+    applyViewId(id)
+  }
+
+  function deleteView(v, done) {
+    Backend.request("DELETE", "/views/" + v.id, function(xhr) {
+      var err = xhr.status === 0 ? "backend not responding" : (xhr.status !== 200 ? httpError(xhr) : "")
+      toast(err !== "" ? "delete failed: " + err : "deleted view '" + v.name + "'")
+      loadViews(function() { if (done) done(err) })
+    })
+  }
+
+  function deleteViewByName(name) {
+    var want = name.toLowerCase()
+    var hit = null
+    for (var i = 0; i < viewList.length; i++)
+      if (String(viewList[i].name).toLowerCase() === want) hit = viewList[i]
+    if (hit === null) { cmdError = "no view named '" + name + "'"; refreshBar(); return }
+    deleteView(hit, function(err) {
+      if (err !== "") { cmdError = err; refreshBar() }
+      else closeSearch(false)
+    })
+  }
+
+  function openViewsPicker() {
+    pickerCtx = "views"
+    picker.title = "Saved views"
+    picker.hint = viewList.length > 0
+        ? "Enter applies a view: it replaces the search and sets its sort. d deletes."
+        : "No saved views yet. Type / then :save <name> to save the active query."
+    picker.emptyText = "no matching view"
+    picker.deletable = true
+    var list = []
+    for (var i = 0; i < viewList.length; i++) {
+      var v = viewList[i]
+      var sl = sortLabelOf(v)
+      list.push({ key: String(v.id), label: String(v.name), detail: String(v.query || "") + (sl !== "" ? "  ·  " + sl : "") })
+    }
+    picker.entries = list
+    picker.currentKey = ""
+    picker.show()
+  }
+
+  function openViewDeleteConfirm(key, from) {
+    var v = viewById(key)
+    if (!v) return
+    pendingViewId = String(v.id)
+    viewConfirmFrom = from
+    pickerCtx = "viewConfirm"
+    picker.title = "Delete view '" + v.name + "'?"
+    picker.hint = "Removes the saved query. Transactions are not changed."
+    picker.emptyText = ""
+    picker.deletable = false
+    picker.entries = [ { key: "yes", label: "Delete it", detail: "" }, { key: "no", label: "Keep it", detail: "" } ]
+    picker.currentKey = ""
+    picker.show()
+  }
+
+  function deleteCursorView() {
+    if (sideIndex < 0 || sideIndex >= sideRows.count) return
+    var r = sideRows.get(sideIndex)
+    if (r.rowKind === "view") openViewDeleteConfirm(r.key, "sidebar")
   }
 
   // ------------------------------------------------------------------ focus and keys
@@ -735,7 +1168,9 @@ FocusScope {
       case "filter.clearLast": clearNewestChip(); break
       case "filter.clearFacet": clearSideFacet(); break
       case "reload": refresh(); break
-      case "search": toast("slash search arrives in the next phase"); break
+      case "search.open": openSearch(); break
+      case "views.open": openViewsPicker(); break
+      case "view.delete": deleteCursorView(); break
       case "quit": root.closeRequested(); break
       case "move.down": if (zone === "sidebar") moveSide(1); else moveRow(1); break
       case "move.up": if (zone === "sidebar") moveSide(-1); else moveRow(-1); break
@@ -760,6 +1195,13 @@ FocusScope {
     running: true
     repeat: true
     onTriggered: root.loadStatus()
+  }
+
+  // The bar's reply is requested after the typing pauses for this long.
+  Timer {
+    id: parseTimer
+    interval: 80
+    onTriggered: root.sendParse()
   }
 
   // Detail follows the cursor, debounced so holding j does not send a request per row.
@@ -914,9 +1356,25 @@ FocusScope {
         Layout.fillHeight: true
         Layout.minimumWidth: 0
 
+        SearchBar {
+          id: searchBar
+          anchors.top: parent.top
+          anchors.left: parent.left
+          anchors.right: parent.right
+          onAction: function(id) { root.onSearchAction(id) }
+          onUserEdited: root.onUserEdit()
+          onCompletionPicked: function(i) { root.acceptCompletion(i) }
+          onCursorChanged: root.scheduleParse()
+          onTextChanged: root.scheduleParse()
+          onOpenChanged: if (!open) Qt.callLater(root.restoreFocus)
+        }
+
         TxTable {
           id: table
-          anchors.fill: parent
+          anchors.top: searchBar.bottom
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
           rowsModel: rows
           currentIndex: root.cursor
           focusedPane: root.zone === "table"
@@ -971,7 +1429,7 @@ FocusScope {
       Text {
         Layout.fillWidth: true
         elide: Text.ElideRight
-        text: "j/k move   Tab pane   f filter   s sort   i detail   b sidebar   ? help   r reload   q quit"
+        text: "j/k move   Tab pane   / search   v views   f filter   s sort   i detail   b sidebar   ? help   r reload   q quit"
         color: Commons.Color.muted
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
@@ -997,6 +1455,7 @@ FocusScope {
     anchors.fill: parent
     onChosen: function(key) { root.onPickerChosen(key) }
     onCancelled: root.onPickerCancelled()
+    onDeleteRequested: function(key) { root.openViewDeleteConfirm(key, "views") }
     onOpenChanged: if (!open) Qt.callLater(root.restoreFocus)
   }
 

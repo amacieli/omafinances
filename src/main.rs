@@ -86,7 +86,7 @@ fn launch() -> Result<()> {
     if let Err(e) = &db {
         log::warn!("database not available: {}", e);
     }
-    let state = AppState::new(settings, db, env!("CARGO_PKG_VERSION"));
+    let state = AppState::new(settings, db, env!("CARGO_PKG_VERSION")).with_config_dir(cfg.clone());
     match state.refresh() {
         Ok(n) => log::info!("cache: {} transactions loaded", n),
         Err(e) => log::warn!("cache not loaded: {:#}", e),

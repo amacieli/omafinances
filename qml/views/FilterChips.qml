@@ -26,17 +26,19 @@ RowLayout {
         width: chipText.implicitWidth + Style.spacing.md * 2 + closeText.implicitWidth + Style.spacing.sm
         height: chipText.implicitHeight + Style.spacing.xs * 2
         radius: Style.cornerRadius
-        color: Qt.alpha(Commons.Color.accent, 0.14)
+        readonly property bool isSearch: modelData.id === "search"
+        color: isSearch ? Commons.Color.accent : Qt.alpha(Commons.Color.accent, 0.14)
         border.width: Style.space(1)
-        border.color: Qt.alpha(Commons.Color.accent, 0.5)
+        border.color: isSearch ? Commons.Color.accent : Qt.alpha(Commons.Color.accent, 0.5)
 
         Text {
           id: chipText
           anchors.left: parent.left
           anchors.leftMargin: Style.spacing.md
           anchors.verticalCenter: parent.verticalCenter
-          text: modelData.label
-          color: Commons.Color.menu.text
+          text: (isSearch ? "/ " : "") + modelData.label
+          color: isSearch ? Commons.Color.menu.background : Commons.Color.menu.text
+          font.bold: isSearch
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
         }
@@ -46,7 +48,7 @@ RowLayout {
           anchors.rightMargin: Style.spacing.md
           anchors.verticalCenter: parent.verticalCenter
           text: "\u00d7"
-          color: Commons.Color.accent
+          color: isSearch ? Commons.Color.menu.background : Commons.Color.accent
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
         }

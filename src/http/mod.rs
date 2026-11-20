@@ -147,7 +147,7 @@ fn handle_request(mut req: Request, port: u16, token: &str, state: &AppState) {
 
     let url = req.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
-    let (code, value) = api::handle(state, &method, path, query);
+    let (code, value) = api::handle_body(state, &method, path, query, &body);
     log::info!("http: {} {} -> {}", method, api::route_name(path), code);
     respond(req, code, Some(&value));
 }
@@ -337,6 +337,88 @@ mod tests {
             assert_eq!(raw(port, &ui_request(m, p, port, TOKEN)).status, want, "{} {}", m, p);
         }
         h.shutdown();
+    }
+
+    #[test]
+    fn slash_routes_are_behind_the_guard_for_every_method() {
+        let (h, port) = start();
+        let no_token = |method: &str, path: &str| {
+            format!("{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", method, path, port)
+        };
+        let routes = [
+            ("GET", "/search/parse?q=p%3Aa"),
+            ("GET", "/views"),
+            ("POST", "/views"),
+            ("DELETE", "/views/1"),
+            ("DELETE", "/views"),
+            ("GET", "/history"),
+            ("POST", "/history"),
+            ("DELETE", "/history"),
+            ("PUT", "/views"),
+        ];
+        for (m, p) in routes {
+            // no token: 401, wrong token: 401, Origin / Sec-Fetch-Site / rebinding Host: 403
+            assert_eq!(raw(port, &no_token(m, p)).status, 401, "{} {}", m, p);
+            assert_eq!(raw(port, &ui_request(m, p, port, &"f".repeat(64))).status, 401, "{} {}", m, p);
+            let origin = ui_request(m, p, port, TOKEN).replace("Host:", "Origin: https://evil.example\r\nHost:");
+            assert_eq!(raw(port, &origin).status, 403, "{} {}", m, p);
+            let fetch = ui_request(m, p, port, TOKEN).replace("Host:", "Sec-Fetch-Site: cross-site\r\nHost:");
+            assert_eq!(raw(port, &fetch).status, 403, "{} {}", m, p);
+            let rebind = ui_request(m, p, port, TOKEN).replace(&format!("127.0.0.1:{}", port), "attacker.example");
+            assert_eq!(raw(port, &rebind).status, 403, "{} {}", m, p);
+        }
+        // with a token they reach the router (no database and no config dir in this state)
+        for (m, p, want) in [
+            ("GET", "/search/parse?q=p%3Aa", 200),
+            ("GET", "/views", 503),
+            ("POST", "/views", 503),
+            ("DELETE", "/views/1", 503),
+            ("DELETE", "/views", 405),
+            ("GET", "/history", 503),
+            ("POST", "/history", 503),
+            ("DELETE", "/history", 405),
+            ("PUT", "/views", 405),
+            ("GET", "/views/1", 405),
+        ] {
+            assert_eq!(raw(port, &ui_request(m, p, port, TOKEN)).status, want, "{} {}", m, p);
+        }
+        h.shutdown();
+    }
+
+    #[test]
+    fn json_bodies_reach_the_handlers_over_the_socket() {
+        let dir = std::env::temp_dir().join(format!("omafin-http-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = Arc::new(AppState::new(Settings::default(), Err("no database".to_string()), "test").with_config_dir(dir.clone()));
+        let port = free_port();
+        let h = spawn(port, TOKEN.to_string(), state).unwrap();
+        let with_body = |method: &str, path: &str, body: &str, content_type: Option<&str>| {
+            let ct = content_type.map(|c| format!("Content-Type: {}\r\n", c)).unwrap_or_default();
+            format!(
+                "{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                method, path, port, TOKEN, ct, body.len(), body
+            )
+        };
+        // text/plain (what QML's XMLHttpRequest sends), application/json, and no Content-Type at all
+        for ct in [Some("text/plain;charset=UTF-8"), Some("application/json"), None] {
+            let r = raw(port, &with_body("POST", "/history", r#"{"q":"p:amazon"}"#, ct));
+            assert_eq!((r.status, r.body.as_str()), (200, r#"{"added":true,"ok":true}"#), "{:?}", ct);
+        }
+        let r = raw(port, &ui_request("GET", "/history", port, TOKEN));
+        assert_eq!((r.status, r.body.as_str()), (200, r#"{"rows":["p:amazon"]}"#));
+        // invalid JSON / not an object -> 400
+        for body in ["not json", "[1]", ""] {
+            assert_eq!(raw(port, &with_body("POST", "/history", body, None)).status, 400, "{:?}", body);
+        }
+        // a body over the limit is refused before routing, also for the new routes
+        let big = "x".repeat(MAX_BODY + 1);
+        assert_eq!(raw(port, &with_body("POST", "/history", &big, None)).status, 413);
+        assert_eq!(raw(port, &with_body("POST", "/views", &big, None)).status, 413);
+        // a body just under the limit reaches the handler (a too-long query: 400, not 413)
+        let q = serde_json::json!({ "q": "a".repeat(MAX_BODY - 20) }).to_string();
+        assert_eq!(raw(port, &with_body("POST", "/history", &q, None)).status, 400);
+        h.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

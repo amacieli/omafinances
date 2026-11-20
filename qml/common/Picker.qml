@@ -19,11 +19,13 @@ Item {
   property string currentKey: ""    // marked with a check when present
   property string emptyText: "no matching choice"
   property bool open: false
+  property bool deletable: false    // d / Delete asks the owner to delete the highlighted key
 
   readonly property var shown: Fuzzy.filterEntries(entries, input.text)
 
   signal chosen(string key)
   signal cancelled()
+  signal deleteRequested(string key)
 
   visible: open
   z: 20
@@ -46,6 +48,11 @@ Item {
     var k = shown[list.currentIndex].key
     open = false
     chosen(k)
+  }
+
+  function requestDelete() {
+    if (list.currentIndex < 0 || list.currentIndex >= shown.length) return
+    deleteRequested(shown[list.currentIndex].key)
   }
 
   function cancel() {
@@ -104,7 +111,12 @@ Item {
           var id = Keymap.resolve(["picker"], t)
           // j and k are letters once there is something typed: they filter instead of moving.
           if ((id === "pick.down" || id === "pick.up") && (t === "j" || t === "k") && input.text !== "") return
-          if (id === "pick.down") { root.move(1); e.accepted = true }
+          // d and Delete delete only while the filter is empty; otherwise they are typed.
+          if (id === "pick.delete") {
+            if (!root.deletable || input.text !== "") return
+            root.requestDelete(); e.accepted = true
+          }
+          else if (id === "pick.down") { root.move(1); e.accepted = true }
           else if (id === "pick.up") { root.move(-1); e.accepted = true }
           else if (id === "pick.choose") { root.choose(); e.accepted = true }
           else if (id === "pick.cancel") { root.cancel(); e.accepted = true }
@@ -194,7 +206,8 @@ Item {
 
       Text {
         Layout.fillWidth: true
-        text: "type to filter   j/k or \u2191\u2193 move   Enter choose   Esc cancel"
+        text: root.deletable ? "type to filter   j/k or \u2191\u2193 move   Enter choose   d delete   Esc cancel"
+                             : "type to filter   j/k or \u2191\u2193 move   Enter choose   Esc cancel"
         color: Commons.Color.muted
         font.family: Style.font.family
         font.pixelSize: Style.font.caption

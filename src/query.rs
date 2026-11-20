@@ -131,7 +131,7 @@ fn parse_decimal(v: &str) -> Option<f64> {
 }
 
 /// Percent-decode one value. `+` stays a plus sign: spaces must be sent as `%20`.
-fn percent_decode(s: &str) -> Result<String, ()> {
+pub(crate) fn percent_decode(s: &str) -> Result<String, ()> {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -340,6 +340,11 @@ fn sort_key(t: &Txn, s: Sort) -> u64 {
 
 /// Filter, count, sum, sort and page. Sums cover every match, not only the page.
 pub fn run<'a>(cache: &'a Cache, q: &Query) -> QueryResult<'a> {
+    run_with(cache, q, None)
+}
+
+/// `run` with an extra predicate ANDed after the structured filters (the slash search).
+pub fn run_with<'a>(cache: &'a Cache, q: &Query, extra: Option<&dyn Fn(&Txn) -> bool>) -> QueryResult<'a> {
     let cat = match q.category {
         None => Cat::Any,
         Some(CategoryFilter::Uncategorized) => Cat::Uncategorized,
@@ -358,7 +363,7 @@ pub fn run<'a>(cache: &'a Cache, q: &Query) -> QueryResult<'a> {
     // (oriented key, id, index into cache.txns). Oriented: descending sorts invert the key.
     let mut hits: Vec<(u64, i64, u32)> = Vec::new();
     for (i, t) in cache.txns.iter().enumerate() {
-        if !f.matches(t) {
+        if !f.matches(t) || extra.is_some_and(|p| !p(t)) {
             continue;
         }
         if t.amount > 0.0 {

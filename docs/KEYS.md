@@ -25,7 +25,8 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `x` | Clear all filters |
 | `X` | Clear the newest filter chip |
 | `r` | Refresh from Lunch Money, then reload |
-| `/` | Slash search (next phase) |
+| `/` | Slash search bar (type terms; `:` starts a command; again: reopens it with the active query) |
+| `v` | Saved views (Enter applies, `d` deletes) |
 | `q` | Quit |
 
 ### Transactions (focus: table)
@@ -49,6 +50,8 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `Enter` | Filter by this account or category (replaces that facet) |
 | `Space` | Toggle this account or category as a filter |
 | `x` | Clear the account or category filter |
+| `Enter` | On a saved view: apply it (replaces the search and sets its sort) |
+| `d` | Delete the saved view under the cursor (asks first) |
 | `Esc` | Back to the table |
 
 ### Detail pane (focus: detail, Tab)
@@ -68,6 +71,21 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `Up` / `Ctrl-p` / `k` | Previous choice (`k` only while the filter text is empty) |
 | `Enter` | Choose |
 | `Esc` | Cancel (back to the filter menu from a sub-picker) |
+| `Delete` / `d` | Delete the highlighted saved view (asks first; `d` only while the filter text is empty) |
+
+### Search bar (focus: search, opened with `/`)
+
+The bar owns its keys while it is open. Typing filters the table live once the query parses; a query that does not parse keeps the last good result and shows the error under the field.
+
+| Key | Action |
+| --- | --- |
+| `Tab` | Accept the highlighted completion (replaces the token, adds a space) |
+| `Shift-Tab` | Previous completion |
+| `Up` / `Down` | With the completion list open: previous / next completion. Otherwise: older / newer pinned query (the draft comes back when you walk past the newest) |
+| `Enter` | Pin the query to history and close the bar; the table gets focus. On a `:` command: run it |
+| `Esc` | Cancel: restore the query that was active when the bar opened |
+| `Ctrl-u` | Clear the field |
+| `Ctrl-w` | Delete the word before the cursor |
 
 ### Typed input (amount, dates, text)
 
@@ -75,6 +93,36 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | --- | --- |
 | `Enter` | Apply (empty clears; a bad value is shown inline and never sent to the backend) |
 | `Esc` | Cancel |
+
+### Search syntax
+
+Terms are separated by spaces and ANDed together. A pinned query shows as the first chip (`/ ...`); `x` clears it with the other filters. It is ANDed with the sidebar and menu filters.
+
+| Term | Meaning |
+| --- | --- |
+| `coffee` | Bare word: matches payee or notes |
+| `"blue bottle"` | Quoted phrase, matched as text |
+| `-amazon` | Negated: excludes the bare word |
+| `p:` / `a:` / `c:` | Payee / account / category path (`c:home/maint`, `c:none` for uncategorized) |
+| `n:` | Notes |
+| `d:` | Date: `2026-10`, `2026-10-01..2026-11-15`, `>2026-01-01`, presets (`today`, `yesterday`, `this-week`, `last-week`, `this-month`, `last-month`, `this-quarter`, `last-quarter`, `ytd`, `this-year`, `last-year`), relative `7d` `3m` `1y` `>30d` |
+| `amount:` / bare `>50` / `10..50` | Amount (absolute value; a bare comparison or range works without `amount:`) |
+| `is:` | `recurring` `pending` `transfer` `income` `expense` `uncat` `categorized` |
+| `sort:` | `sort:-amount`, `sort:date`, and so on (`-` reverses) |
+| `a,b` | Comma list inside a value means OR: `a:chase,amex` |
+
+Examples:
+
+- `p:coffee` — payee contains "coffee"
+- `a:chase d:last-month` — Chase transactions from last month
+- `c:home/maint -p:hardware` — home maintenance, excluding payees matching "hardware"
+- `"blue bottle" d:2026-10..2026-11-15` — a quoted phrase in a date range
+- `>50 is:expense sort:-amount` — expenses over 50, largest first
+- `d:>2026-01-01 is:recurring` — recurring items since January 2026
+- `c:none d:7d` — uncategorized, last seven days
+- `a:chase,amex d:ytd n:reimburse` — two accounts, year to date, notes mention "reimburse"
+
+Commands (the bar text starts with `:`): `:save <name>` saves the active query and sort as a view (empty bar: the active query), `:view <name>` applies a view (fuzzy name), `:views` opens the saved views list, `:delete <name>`, `:clear` clears all filters, `:help` opens this help.
 
 ### This help
 

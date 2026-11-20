@@ -32,6 +32,7 @@ QtObject {
   //   body     optional string sent as is
   //   headers  optional { name: value }
   // Returns the XMLHttpRequest (for abort()).
+  // DELETE and POST with a body go through here too: pass the method and, for a body, a string.
   function request(method, path, onDone, body, headers) {
     var xhr = new XMLHttpRequest()
     xhr.onreadystatechange = function() {
@@ -43,5 +44,10 @@ QtObject {
     if (body === undefined || body === null) xhr.send()
     else xhr.send(body)
     return xhr
+  }
+
+  // request() with a JSON body: `obj` is serialized and sent with Content-Type application/json.
+  function json(method, path, obj, onDone) {
+    return request(method, path, onDone, JSON.stringify(obj), { "Content-Type": "application/json" })
   }
 }
