@@ -86,7 +86,12 @@ fn launch() -> Result<()> {
     if let Err(e) = &db {
         log::warn!("database not available: {}", e);
     }
-    let state = Arc::new(AppState { settings, db, version: env!("CARGO_PKG_VERSION") });
+    let state = AppState::new(settings, db, env!("CARGO_PKG_VERSION"));
+    match state.refresh() {
+        Ok(n) => log::info!("cache: {} transactions loaded", n),
+        Err(e) => log::warn!("cache not loaded: {:#}", e),
+    }
+    let state = Arc::new(state);
     let token = http::session::create(&cfg, port).context("write session token")?;
     let handle = http::spawn(port, token.clone(), state).with_context(|| format!("cannot listen on 127.0.0.1:{} (already running?)", port))?;
 

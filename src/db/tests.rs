@@ -2,9 +2,9 @@ use super::*;
 use rusqlite::Connection;
 use std::os::unix::fs::PermissionsExt;
 
-const PASS: &str = "test-pass-synthetic";
+pub(crate) const PASS: &str = "test-pass-synthetic";
 
-fn setup() -> (std::path::PathBuf, PathBuf) {
+pub(crate) fn setup() -> (std::path::PathBuf, PathBuf) {
     let dir = std::env::temp_dir().join(format!("omafin-test-{}-{:?}", std::process::id(), std::thread::current().id()).replace(['(', ')', ' '], ""));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();

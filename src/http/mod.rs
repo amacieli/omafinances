@@ -162,11 +162,7 @@ mod tests {
     const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     fn state() -> Arc<AppState> {
-        Arc::new(AppState {
-            settings: Settings::default(),
-            db: Err("no database in socket tests".to_string()),
-            version: "test",
-        })
+        Arc::new(AppState::new(Settings::default(), Err("no database in socket tests".to_string()), "test"))
     }
 
     /// A free loopback port: bind an ephemeral one, note it, release it.
@@ -313,6 +309,33 @@ mod tests {
             assert!(!r.head.to_ascii_lowercase().contains("access-control-"), "{}", r.head);
         }
 
+        h.shutdown();
+    }
+
+    #[test]
+    fn new_routes_are_behind_the_guard() {
+        let (h, port) = start();
+        let no_token = |method: &str, path: &str| {
+            format!("{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", method, path, port)
+        };
+        // without a token every new route is refused by the guard, whatever the method
+        for (m, p) in [("GET", "/transactions"), ("GET", "/transactions/1"), ("GET", "/accounts"), ("GET", "/categories"), ("POST", "/refresh"), ("GET", "/refresh")] {
+            assert_eq!(raw(port, &no_token(m, p)).status, 401, "{} {}", m, p);
+        }
+        // with a token they reach the router; this state has no database, so data routes say 503
+        for (m, p, want) in [
+            ("GET", "/transactions", 503),
+            ("GET", "/transactions/1", 503),
+            ("GET", "/accounts", 503),
+            ("GET", "/categories", 503),
+            ("POST", "/refresh", 503),
+            ("GET", "/refresh", 405),
+            ("POST", "/accounts", 405),
+            ("POST", "/transactions/1", 405),
+            ("GET", "/transactions/1/extra", 404),
+        ] {
+            assert_eq!(raw(port, &ui_request(m, p, port, TOKEN)).status, want, "{} {}", m, p);
+        }
         h.shutdown();
     }
 

@@ -178,6 +178,144 @@ impl Db {
     }
 }
 
+/// One transaction as stored, with its account and Lunch Money category already resolved.
+/// Nullable text stays `None`; the cache decides what to show.
+#[derive(Debug, Clone, Default)]
+pub struct RawTxn {
+    pub id: i64,
+    pub date: String,
+    pub payee: Option<String>,
+    pub original_name: Option<String>,
+    pub notes: Option<String>,
+    pub amount: f64,
+    pub currency: Option<String>,
+    pub status: Option<String>,
+    pub source: Option<String>,
+    pub tag_ids: Option<String>,
+    pub recurring_id: Option<i64>,
+    pub external_id: Option<String>,
+    pub created_at_lm: Option<String>,
+    pub updated_at_lm: Option<String>,
+    pub is_pending: bool,
+    pub category_id: Option<i64>,
+    pub category_local_id: Option<i64>,
+    pub lm_category: Option<String>,
+    pub account_id: Option<i64>,
+    pub account: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RawAccount {
+    pub id: i64,
+    pub name: String,
+    pub display_name: Option<String>,
+    pub kind: Option<String>,
+    pub institution: Option<String>,
+    pub mask: Option<String>,
+    pub currency: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RawCategory {
+    pub id: i64,
+    pub parent_id: Option<i64>,
+    pub name: String,
+    pub kind: String,
+    pub sort: i64,
+}
+
+/// Everything the cache needs, read in one pass. `balances` holds the latest snapshot per account.
+#[derive(Debug, Clone, Default)]
+pub struct Snapshot {
+    pub txns: Vec<RawTxn>,
+    pub accounts: Vec<RawAccount>,
+    pub categories: Vec<RawCategory>,
+    pub balances: Vec<(i64, f64)>,
+}
+
+impl Db {
+    /// Read the whole mirror for the in-memory cache. Bound parameters only; no filtering here.
+    pub fn load_all(&self) -> Result<Snapshot> {
+        let conn = self.lock()?;
+        if !migrations::column_exists(&conn, "transactions", "category_local_id")? {
+            bail!("database is not migrated (no category_local_id column)");
+        }
+        let mut snap = Snapshot::default();
+
+        if migrations::table_exists(&conn, "category")? {
+            let mut s = conn.prepare("SELECT id, parent_id, name, COALESCE(kind,'expense'), COALESCE(sort,0) FROM category")?;
+            snap.categories = s
+                .query_map([], |r| {
+                    Ok(RawCategory { id: r.get(0)?, parent_id: r.get(1)?, name: r.get(2)?, kind: r.get(3)?, sort: r.get(4)? })
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+        }
+
+        let mut s = conn.prepare("SELECT id, name, display_name, type, institution_name, mask, currency FROM accounts")?;
+        snap.accounts = s
+            .query_map([], |r| {
+                Ok(RawAccount {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    display_name: r.get(2)?,
+                    kind: r.get(3)?,
+                    institution: r.get(4)?,
+                    mask: r.get(5)?,
+                    currency: r.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+
+        if migrations::table_exists(&conn, "account_balances")? {
+            let mut s = conn.prepare(
+                "SELECT b.account_id, b.balance FROM account_balances b
+                 WHERE b.balance_date = (SELECT max(b2.balance_date) FROM account_balances b2 WHERE b2.account_id = b.account_id)",
+            )?;
+            snap.balances = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        }
+
+        let mut s = conn.prepare(
+            "SELECT t.id, t.date, t.payee, t.original_name, t.notes, t.amount, t.currency, t.status, t.source,
+                    t.tag_ids, t.recurring_id, t.external_id, t.created_at_lm, t.updated_at_lm, t.is_pending,
+                    t.category_id, t.category_local_id, c.name,
+                    COALESCE(a.id, m.id),
+                    COALESCE(NULLIF(a.display_name,''), a.name, NULLIF(m.display_name,''), m.name)
+             FROM transactions t
+             LEFT JOIN accounts a ON a.id = t.plaid_account_id
+             LEFT JOIN accounts m ON m.id = t.manual_account_id
+             LEFT JOIN categories c ON c.id = t.category_id
+             ORDER BY t.id",
+        )?;
+        snap.txns = s
+            .query_map([], |r| {
+                Ok(RawTxn {
+                    id: r.get(0)?,
+                    date: r.get(1)?,
+                    payee: r.get(2)?,
+                    original_name: r.get(3)?,
+                    notes: r.get(4)?,
+                    amount: r.get(5)?,
+                    currency: r.get(6)?,
+                    status: r.get(7)?,
+                    source: r.get(8)?,
+                    tag_ids: r.get(9)?,
+                    recurring_id: r.get(10)?,
+                    external_id: r.get(11)?,
+                    created_at_lm: r.get(12)?,
+                    updated_at_lm: r.get(13)?,
+                    is_pending: r.get::<_, i64>(14)? != 0,
+                    category_id: r.get(15)?,
+                    category_local_id: r.get(16)?,
+                    lm_category: r.get(17)?,
+                    account_id: r.get(18)?,
+                    account: r.get(19)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(snap)
+    }
+}
+
 fn path_of(tree: &HashMap<i64, (Option<i64>, String)>, id: i64) -> String {
     let mut parts = Vec::new();
     let mut cur = Some(id);
@@ -195,4 +333,4 @@ fn path_of(tree: &HashMap<i64, (Option<i64>, String)>, id: i64) -> String {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

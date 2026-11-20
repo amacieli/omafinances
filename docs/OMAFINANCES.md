@@ -17,6 +17,44 @@ maintained by `sync.py`. Rust backend + Quickshell (QML) UI, for Omarchy/Hyprlan
 - **Shared database**: `sync.py` writes the same file. The app must not add FTS tables or triggers
   to it.
 
+## API
+
+Loopback JSON API for the UI. Every route needs the per-launch bearer token (401 without it). Paths
+match exactly; the only pattern is `/transactions/<id>`. Unknown path: 404. Known path, wrong
+method: 405. Errors are `{"error": "..."}` and never include payees, amounts or tokens. If the
+database is unavailable or not loaded yet, data routes return 503.
+
+Transactions are held in memory (`src/cache.rs`) and loaded once at startup. Queries run against
+that copy (`src/query.rs`). The cache does not follow `sync.py` on its own: call `POST /refresh`
+after a sync.
+
+- `GET /health`, `GET /status`, `GET /settings`: unchanged.
+- `GET /transactions?sort=date|amount|payee|account|category&dir=asc|desc&account=<id>&category=<id>|none&from=YYYY-MM-DD&to=YYYY-MM-DD&min=<n>&max=<n>&flow=out|in&q=<text>&limit=1..500&offset=<n>`
+  - Filters AND together. `category=<id>` includes that category and all its descendants.
+    `category=none` means no local category.
+  - `min`/`max` compare the absolute amount. `flow=out` is amount > 0 (spending); `flow=in` is
+    amount < 0 (income, refunds).
+  - `q` is a case-insensitive substring match over payee, original name and notes. Plain text only.
+  - Defaults: `sort=date&dir=desc`, `limit=100`, `offset=0`. Ties break by id descending.
+  - Bad or duplicate parameters, and unknown parameter names, return 400. Nothing is silently
+    ignored.
+  - Response: `all` (rows in the cache), `total` (rows matching the filters, used for paging),
+    `sum_out` and `sum_in` (over all matches, not only the page), and `rows`.
+  - Each row: `id, date, payee, amount, currency, account_id, account, category` (local path such as
+    `Home › Improvement › Paint`, or null), `category_id` (local id or null), `lm_category` (Lunch
+    Money name or null), `pending`, `recurring`.
+- `GET /transactions/<id>`: the row plus `original_name, notes, status, source, tags, recurring_id,
+  external_id, created_at_lm, updated_at_lm`. 400 if `<id>` is not an integer, 404 if unknown.
+- `GET /accounts`: `rows` ordered by name, each with `id, name, type, institution, mask, balance,
+  currency, count, sum_out`. `balance` is the latest snapshot, or null.
+- `GET /categories`: `rows` in tree order (parent before children, siblings by sort then name), each
+  with `id, parent_id, name, kind, depth, count, count_subtree, sum_out_subtree`, plus
+  `uncategorized` (transactions with no local category).
+- `POST /refresh`: reloads the cache from the database. Returns `{"ok": true, "transactions": N}`.
+  On a failed reload the old cache keeps serving and the response is 500.
+
+Amounts follow the Lunch Money convention: positive is money out, negative is money in.
+
 ## Build, run, test
 
 ```sh
