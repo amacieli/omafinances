@@ -1,0 +1,43 @@
+[package]
+name = "omafinances"
+version = "0.1.0"
+edition = "2021"
+authors = ["Adam"]
+license = "MIT"
+description = "OmaFinances: keyboard-first finance manager over the encrypted Lunch Money mirror (Rust backend + Quickshell QML UI)"
+default-run = "omafinances"
+
+[dependencies]
+# SQLCipher (system OpenSSL), same file format as the Python sync's sqlcipher3.
+rusqlite = { version = "0.42", features = ["bundled-sqlcipher"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+chrono = "0.4"
+# Secrets live in the Secret Service keyring (a store feature is required, else keyring 3 uses a mock).
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+# Loopback HTTP for the QML UI (guarded: token, Host, no Origin).
+tiny_http = "0.12"
+url = "2.5"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+dirs = "7.0.0"
+
+[lib]
+name = "omafinances"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omafinances"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+codegen-units = 16
+strip = true
+
+[profile.dev]
+opt-level = 0
+codegen-units = 256
+debug = true

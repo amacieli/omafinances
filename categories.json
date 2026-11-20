@@ -1,0 +1,116 @@
+{
+  "main": {
+    "Education": {
+      "subs": {
+        "Services": {
+          "subsubs": {}
+        }
+      }
+    },
+    "Entertainment": {
+      "subs": {
+        "Books": {
+          "subsubs": {}
+        },
+        "Streaming media": {
+          "subsubs": {}
+        }
+      }
+    },
+    "Geckos and snakes": {
+      "subs": {}
+    },
+    "Gifts": {
+      "subs": {
+        "Birthday or Christmas presents": {
+          "subsubs": {}
+        }
+      }
+    },
+    "Home": {
+      "subs": {
+        "Improvement": {
+          "subsubs": {}
+        },
+        "Maintenance": {
+          "subsubs": {}
+        },
+        "Mortgage": {
+          "subsubs": {}
+        },
+        "Security": {
+          "subsubs": {}
+        }
+      }
+    },
+    "Personal": {
+      "subs": {
+        "Hobbies": {
+          "subsubs": {}
+        },
+        "Maintenance": {
+          "subsubs": {}
+        },
+        "Vacations": {
+          "subsubs": {}
+        }
+      }
+    },
+    "Utilities": {
+      "subs": {
+        "Gas & Electric": {
+          "subsubs": {}
+        },
+        "Internet": {
+          "subsubs": {}
+        },
+        "Phone": {
+          "subsubs": {}
+        },
+        "Technology": {
+          "subsubs": {}
+        }
+      }
+    },
+    "Loans": {
+      "subs": {}
+    },
+    "Loan Fees and Charges": {
+      "subs": {}
+    },
+    "Loan Insurance": {
+      "subs": {}
+    },
+    "PRODUCTIVE EXPENSES": {
+      "subs": {}
+    },
+    "PROTECTIVE EXPENSES": {
+      "subs": {}
+    },
+    "Car Insurance": {
+      "subs": {}
+    },
+    "Gym": {
+      "subs": {}
+    },
+    "Healthcare": {
+      "subs": {
+        "Doctor": {
+          "subsubs": {}
+        }
+      }
+    },
+    "Saint Lucia": {
+      "subs": {}
+    },
+    "Taxes": {
+      "subs": {}
+    },
+    "Federal Estimated Tax Payment": {
+      "subs": {}
+    },
+    "Form 1040: Federal estimated tax, qrtrly": {
+      "subs": {}
+    }
+  }
+}

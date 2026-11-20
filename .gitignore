@@ -1,0 +1,14 @@
+.env
+*.db
+*.db-shm
+*.db-wal
+*.log
+.venv/
+__pycache__/
+*.pyc
+
+# OmaFinances UI (kit symlinks created by the launcher; build output; backups)
+qml/Commons
+qml/Ui
+/target
+backups/
