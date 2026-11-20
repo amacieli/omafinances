@@ -5,6 +5,7 @@ pub mod cache;
 pub mod config;
 pub mod db;
 pub mod http;
+pub mod insight;
 pub mod query;
 pub mod search;
 pub mod smart;

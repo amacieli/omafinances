@@ -1068,3 +1068,181 @@ fn smart_preview_apply_undo_redo_through_the_api() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- Phase 5: suggest, review, insights, dashboard --------------------------------------------
+
+#[test]
+fn insight_routes_names_and_guards() {
+    for (p, n) in [
+        ("/suggest", "suggest"),
+        ("/suggest/accuracy", "suggest_accuracy"),
+        ("/review", "review"),
+        ("/insights/recurring", "insights_recurring"),
+        ("/insights/anomalies", "insights_anomalies"),
+        ("/insights/transfers", "insights_transfers"),
+        ("/dashboard", "dashboard"),
+    ] {
+        assert_eq!(route_name(p), n);
+    }
+    assert_eq!(route_name("/insights"), "unknown");
+    assert_eq!(route_name("/insights/recurring/x"), "unknown");
+    let s = no_db();
+    for p in ["/suggest/accuracy", "/review", "/insights/recurring", "/insights/anomalies", "/insights/transfers", "/dashboard"] {
+        let (code, body) = get(&s, p);
+        assert_eq!((code, body["error"].as_str()), (503, Some("unavailable")), "{p}");
+        assert_eq!(send(&s, "POST", p, "").0, 405, "POST {p}");
+    }
+    assert_eq!(send(&s, "POST", "/suggest", r#"{"ids":[1]}"#).0, 503);
+    assert_eq!(get(&s, "/suggest").0, 405);
+    assert_eq!(get(&s, "/insights").0, 404);
+}
+
+/// Adds a realistic synthetic history behind the app's back, then refreshes. Today is 2026-11-20.
+fn insight_state() -> (std::path::PathBuf, AppState, i64, i64) {
+    let (dir, path, s) = loaded_state();
+    let s = s.with_today(chrono::NaiveDate::from_ymd_opt(2026, 11, 20).unwrap());
+    let paint = cat_id(&s, "Paint");
+    let job = cat_id(&s, "Job");
+    let c = raw(&path);
+    let mut sql = String::new();
+    // monthly payroll, labeled Job
+    for k in 0..12 {
+        let (y, m) = if k < 1 { (2025, 12) } else { (2026, k) };
+        sql += &format!(
+            "INSERT INTO transactions(id,date,payee,amount,currency,plaid_account_id) VALUES ({},'{y}-{m:02}-05','Acme Payroll',-1000.0,'USD',1);\
+             UPDATE transactions SET category_local_id={job} WHERE id={};",
+            100 + k, 100 + k
+        );
+    }
+    // irregular hardware store visits, labeled Paint
+    for k in 0..24 {
+        let (m, day) = (1 + k % 10, 2 + (k * 7) % 25);
+        sql += &format!(
+            "INSERT INTO transactions(id,date,payee,amount,currency,plaid_account_id) VALUES ({},'2026-{m:02}-{day:02}','Hardware Depot',{}.25,'USD',1);\
+             UPDATE transactions SET category_local_id={paint} WHERE id={};",
+            200 + k, 30 + k, 200 + k
+        );
+    }
+    sql += "INSERT INTO transactions(id,date,payee,amount,currency,plaid_account_id) VALUES
+        (300,'2026-11-16','Hardware Depot',45.25,'USD',1),
+        (301,'2026-11-17','Hardware Depot',47.25,'USD',1),
+        (310,'2026-11-10','Move Money',250.0,'USD',1),
+        (311,'2026-11-11','Move Money',-250.0,'USD',NULL),
+        (312,'2026-11-15','Brand New Gadget',120.0,'USD',1),
+        (313,'2026-11-18','Hardware Depot',46.25,'USD',1);
+        UPDATE transactions SET manual_account_id=2 WHERE id=311;";
+    c.execute_batch(&sql).unwrap();
+    drop(c);
+    assert_eq!(s.refresh().unwrap(), 4 + 12 + 24 + 6);
+    (dir, s, paint, job)
+}
+
+#[test]
+fn insight_bad_params_are_400() {
+    let (dir, s, _, _) = insight_state();
+    for q in ["limit=0", "limit=201", "limit=x", "offset=-1", "offset=x", "foo=1", "limit=5&limit=6", "limit"] {
+        let (code, body) = get_q(&s, "/review", q);
+        assert_eq!((code, body["error"].as_str()), (400, Some("invalid")), "review?{q}");
+    }
+    for q in ["months=0", "months=61", "months=x", "exclude_transfers=maybe", "foo=1"] {
+        assert_eq!(get_q(&s, "/dashboard", q).0, 400, "dashboard?{q}");
+    }
+    for p in ["/insights/recurring", "/insights/anomalies", "/insights/transfers", "/suggest/accuracy"] {
+        assert_eq!(get_q(&s, p, "x=1").0, 400, "{p}");
+    }
+    for b in ["", "[1]", r#"{}"#, r#"{"ids":[]}"#, r#"{"ids":"1"}"#, r#"{"ids":["1"]}"#] {
+        assert_eq!(send(&s, "POST", "/suggest", b).0, 400, "body {b}");
+    }
+    let many: Vec<i64> = (1..=201).collect();
+    assert_eq!(send(&s, "POST", "/suggest", &serde_json::json!({ "ids": many }).to_string()).0, 400);
+    let ok: Vec<i64> = (1..=200).collect();
+    assert_eq!(send(&s, "POST", "/suggest", &serde_json::json!({ "ids": ok }).to_string()).0, 200);
+    for q in ["limit=1&offset=0", "limit=200"] {
+        assert_eq!(get_q(&s, "/review", q).0, 200);
+    }
+    for q in ["months=1", "months=60", "exclude_transfers=false", "exclude_transfers=true&months=3"] {
+        assert_eq!(get_q(&s, "/dashboard", q).0, 200, "dashboard?{q}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn insights_end_to_end_through_the_real_handlers() {
+    let (dir, s, paint, _job) = insight_state();
+
+    let (code, acc) = get(&s, "/suggest/accuracy");
+    assert_eq!(code, 200, "{acc}");
+    assert_eq!((acc["enabled"].clone(), acc["reason"].clone()), (serde_json::json!(true), Value::Null));
+    assert_eq!(acc["accuracy"]["labeled"], 37);
+    assert_eq!(acc["accuracy"]["folds"], 5);
+    assert!(acc["accuracy"]["top3"].as_f64().unwrap() >= 0.7);
+    assert!(acc.get("suggestions").is_none());
+
+    let (code, sg) = send(&s, "POST", "/suggest", r#"{"ids":[300,301,1,999]}"#);
+    assert_eq!(code, 200, "{sg}");
+    assert_eq!(sg["enabled"], true);
+    let rows = sg["suggestions"].as_array().unwrap();
+    assert_eq!(rows.iter().map(|r| r["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![300, 301]);
+    let top = &rows[0]["options"][0];
+    assert_eq!((top["category_id"].as_i64(), top["source"].as_str()), (Some(paint), Some("model")));
+    assert!(top["path"].as_str().unwrap().contains("Paint"));
+    assert!(top["confidence"].as_f64().unwrap() >= 0.3 && rows[0]["options"].as_array().unwrap().len() <= 3);
+
+    let (code, rv) = get_q(&s, "/review", "limit=3&offset=0");
+    assert_eq!(code, 200, "{rv}");
+    assert_eq!(rv["mode"], "suggest");
+    assert_eq!(rv["remaining"], 9, "2,3,4,300,301,310,311,312,313");
+    assert_eq!(rv["rows"].as_array().unwrap().len(), 3);
+    assert!(rv["rows"][0]["options"].is_array() && rv["rows"][0]["payee_count"].is_i64());
+    let (_, rv2) = get_q(&s, "/review", "limit=3&offset=3");
+    assert_ne!(rv["rows"][0]["id"], rv2["rows"][0]["id"]);
+
+    let (code, rc) = get(&s, "/insights/recurring");
+    assert_eq!(code, 200);
+    let acme = rc["series"].as_array().unwrap().iter().find(|x| x["payee"] == "acme payroll").expect("payroll series");
+    assert_eq!((acme["period"].as_str(), acme["count"].as_i64(), acme["active"].as_bool()), (Some("monthly"), Some(12), Some(true)));
+    assert_eq!(acme["amount_median"], -1000.0);
+    assert_eq!(acme["txn_ids"].as_array().unwrap().len(), 12);
+    let (code, an) = get(&s, "/insights/anomalies");
+    assert_eq!(code, 200);
+    let kinds: Vec<(String, i64)> =
+        an["items"].as_array().unwrap().iter().map(|i| (i["kind"].as_str().unwrap().to_string(), i["txn_id"].as_i64().unwrap())).collect();
+    assert!(kinds.contains(&("new_payee".to_string(), 312)), "{kinds:?}");
+    assert!(!kinds.iter().any(|(_, id)| *id == 310 || *id == 311), "transfer rows excluded: {kinds:?}");
+    let (code, tr) = get(&s, "/insights/transfers");
+    assert_eq!(code, 200);
+    assert_eq!((tr["count"].as_i64(), tr["total"].as_f64()), (Some(1), Some(250.0)));
+    let p = &tr["pairs"][0];
+    assert_eq!((p["out_id"].as_i64(), p["in_id"].as_i64(), p["days_apart"].as_i64()), (Some(310), Some(311), Some(1)));
+    assert_eq!((p["out_account"].as_str(), p["in_account"].as_str()), (Some("Checking"), Some("Manual Cash")));
+
+    let (code, db) = get_q(&s, "/dashboard", "months=3");
+    assert_eq!(code, 200, "{db}");
+    assert_eq!((db["from"].as_str(), db["to"].as_str()), (Some("2026-09-01"), Some("2026-11-30")));
+    assert_eq!(db["months"].as_array().unwrap().len(), 3);
+    assert_eq!(db["months"][2]["month"], "2026-11");
+    assert_eq!(db["transfers_excluded"], serde_json::json!({ "pairs": 1, "total": 250.0 }));
+    let nov_out = db["months"][2]["out"].as_f64().unwrap();
+    assert_eq!(nov_out, 45.25 + 47.25 + 120.0 + 46.25, "nov spend without the transfer");
+    let (_, db2) = get_q(&s, "/dashboard", "months=3&exclude_transfers=false");
+    assert_eq!(db2["months"][2]["out"].as_f64().unwrap(), nov_out + 250.0);
+    assert!(db["by_category"].as_array().unwrap().iter().any(|c| c["path"] == "Uncategorized"));
+
+    // accepting a suggestion = the existing categorize route; the cached model is invalidated
+    let (code, b) = send(&s, "POST", "/transactions/categorize", &format!(r#"{{"ids":[300],"category_id":{paint}}}"#));
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(get(&s, "/suggest/accuracy").1["accuracy"]["labeled"], 38, "model retrained on the refreshed cache");
+    let (_, sg2) = send(&s, "POST", "/suggest", r#"{"ids":[300,301]}"#);
+    assert_eq!(sg2["suggestions"].as_array().unwrap().len(), 1);
+    assert_eq!(get_q(&s, "/review", "limit=1").1["remaining"], 8);
+    assert_eq!(send(&s, "POST", "/undo", "").0, 200);
+    assert_eq!(get(&s, "/suggest/accuracy").1["accuracy"]["labeled"], 37);
+
+    // a rule made by smart-apply is the first option, confidence 1.0
+    let (code, b) = send(&s, "POST", "/smart/apply", &format!(r#"{{"category_id":{paint},"txn_ids":[300,301],"make_rule":{{"name":"hw"}}}}"#));
+    assert_eq!(code, 200, "{b}");
+    let (_, sg3) = send(&s, "POST", "/suggest", r#"{"ids":[313]}"#);
+    let o = &sg3["suggestions"][0]["options"][0];
+    assert_eq!((o["source"].as_str(), o["confidence"].as_f64(), o["category_id"].as_i64()), (Some("rule"), Some(1.0), Some(paint)));
+    let _ = std::fs::remove_dir_all(&dir);
+}

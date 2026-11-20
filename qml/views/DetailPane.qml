@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Commons as Commons
 import "../state/Query.js" as Query
+import "../state/Insight.js" as Insight
 
 // Right detail pane for the selected transaction (GET /transactions/<id>). Shows every field the
 // backend returns, the Lunch Money category next to the local one, tags and notes.
@@ -14,6 +15,15 @@ Rectangle {
   property bool loading: false
   property string error: ""
   property bool focusedPane: false
+  property var suggState: null    // {enabled, reason, accuracy} from /suggest/accuracy or POST /suggest, or null
+  property var suggRow: null      // the /suggest row for this transaction, or null
+  property string suggError: ""   // the backend's error envelope for the last suggestion request
+
+  // Suggestions are shown only for an uncategorized row (category_id null, or no category).
+  readonly property bool uncategorized: txn !== null
+      && (txn.category_id === undefined ? !txn.category : txn.category_id === null)
+  readonly property var suggTop: suggState && suggState.enabled === true ? Insight.topOption(suggRow) : null
+  readonly property string suggLine: suggError !== "" ? suggError : Insight.detailSuggestLine(suggState, suggRow)
 
   function scrollBy(dy) {
     var max = Math.max(0, flick.contentHeight - flick.height)
@@ -108,6 +118,27 @@ Rectangle {
         font.family: Style.font.family
         font.pixelSize: Style.font.subtitle
         font.bold: true
+      }
+
+      // Ghost chip: the top suggestion (Ctrl-y accepts), or why there is none.
+      Rectangle {
+        visible: root.uncategorized
+        width: body.width
+        height: suggText.implicitHeight + Style.spacing.md * 2
+        radius: Style.cornerRadius
+        color: "transparent"
+        border.width: Style.space(1)
+        border.color: root.suggTop ? Commons.Color.accent : Commons.Color.menu.border
+        Text {
+          id: suggText
+          anchors.fill: parent
+          anchors.margins: Style.spacing.md
+          wrapMode: Text.WordWrap
+          text: root.suggLine
+          color: root.suggTop ? Commons.Color.accent : Commons.Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+        }
       }
 
       Repeater {

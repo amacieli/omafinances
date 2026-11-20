@@ -6,6 +6,7 @@ import "state"
 import "state/Query.js" as Query
 import "keys/Keymap.js" as Keymap
 import "state/Smart.js" as Smart
+import "state/Insight.js" as Insight
 import "common"
 import "views"
 import "common/Fuzzy.js" as Fuzzy
@@ -114,6 +115,33 @@ FocusScope {
   property var mgrPendingParent: null // add: the new node's parent (null = top level)
   property int mgrPendingAfter: -1    // sibling add: the cursor node's index among its siblings
   property int mgrPendingId: -1       // rename target
+  // ------------------------------------------------------------------ Phase 5: dashboard and insights (D)
+  property bool dashOpen: false
+  property int dashTab: 0                 // index into Insight.TABS
+  property bool dashTransfers: false      // t: include transfer rows in the dashboard totals
+  property var dashData: null             // GET /dashboard body, or null
+  property string dashError: ""           // the backend's error envelope for /dashboard
+  property var insightData: ({})          // tab name -> body (recurring / anomalies / transfers), or null
+  property var insightErr: ({})           // tab name -> the backend's error envelope text, or ""
+  property var dashCursors: ({})          // tab name -> row index of that list
+  property int dashGen: 0
+  // ------------------------------------------------------------------ Phase 5: review queue (R) and suggestions
+  property bool reviewOpen: false
+  property var reviewRows: []             // loaded GET /review rows, in queue order
+  property string reviewMode: ""          // "suggest" | "frequency"
+  property int reviewRemaining: 0
+  property int reviewStart: 0             // remaining when the queue was opened (progress)
+  property int reviewCursor: 0
+  property int reviewLastPage: 0          // size of the last GET /review page (more rows wait when it was full)
+  property bool reviewLoading: false
+  property string reviewError: ""
+  property int reviewGen: 0               // bumped per reload and on close; stale replies are dropped
+  property bool reviewDirty: false        // a row was accepted: the table reloads when the queue closes
+  property var reviewInFlight: ({})       // transaction id -> true while its accept request runs
+  property var suggState: null            // {enabled, reason, accuracy} from /suggest/accuracy or POST /suggest; null = not loaded
+  property string suggError: ""           // the backend's error envelope for the last suggestion request
+  property var detailSugg: null           // the /suggest row for the detail pane's transaction, or null
+  property int detailSuggGen: 0
 
   // Overlay context: which picker or prompt is up. Sub-pickers return to the filter menu.
   property string pickerCtx: ""  // "filter" | "account" | "category" | "date" | "flow" | "sort"
@@ -147,7 +175,7 @@ FocusScope {
   ListModel { id: rows }
   ListModel { id: sideRows }
 
-  readonly property bool overlayOpen: picker.open || prompt.open || help.open || searchBar.open || managerOpen || smartOpen
+  readonly property bool overlayOpen: picker.open || prompt.open || help.open || searchBar.open || managerOpen || smartOpen || dashOpen || reviewOpen
 
   // ------------------------------------------------------------------ helpers
   function parseJson(text) {
@@ -746,6 +774,8 @@ FocusScope {
     picker.focus = false; prompt.focus = false; help.focus = false
     searchBar.field.focus = false
     if (smartOpen) { smart.focusKeys(); return }
+    if (reviewOpen) { review.focusKeys(); return }
+    if (dashOpen) { dashView.focusKeys(); return }
     if (managerOpen) { manager.focusKeys(); return }
     root.forceActiveFocus()
   }
@@ -766,7 +796,7 @@ FocusScope {
       detailLoading = false
       if (xhr.status === 200) {
         var j = parseJson(xhr.responseText)
-        if (j) { detailData = j; detailError = ""; return }
+        if (j) { detailData = j; detailError = ""; loadDetailSuggestion(); return }
       }
       detailData = null
       detailError = xhr.status === 0 ? "backend not responding"
@@ -820,6 +850,7 @@ FocusScope {
   function afterChange() {
     loadFacets()
     reloadRows(cursor)
+    if (reviewOpen) { reviewReload(true); loadSuggestAccuracy() }
   }
 
   // A category chip shows the category's current name (it may have been renamed in the manager).
@@ -1891,6 +1922,265 @@ FocusScope {
   }
 
   // The focused pane's scope is checked before "global", so a pane can shadow a global key.
+  // ------------------------------------------------------------------ Phase 5: insights, review, suggestions
+  // AppShell makes every request and owns every piece of state; the overlays and DetailPane render
+  // the properties and emit ids back here.
+
+  // The backend's error envelope shown verbatim ("error: message"), else the HTTP status.
+  function envelopeText(xhr) {
+    if (xhr.status === 0) return "backend not responding (port " + Backend.port + ")"
+    var j = parseJson(xhr.responseText)
+    if (j && (j.error || j.message)) return (j.error ? String(j.error) + ": " : "") + String(j.message || "")
+    return describeHttp(xhr)
+  }
+
+  // The suggest gate: GET /suggest/accuracy -> suggState {enabled, reason, accuracy}.
+  function loadSuggestAccuracy() {
+    Backend.request("GET", "/suggest/accuracy", function(xhr) {
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j) { suggError = envelopeText(xhr); return }
+      suggError = ""
+      suggState = { enabled: j.enabled === true, reason: j.reason || null, accuracy: j.accuracy || null }
+    })
+  }
+
+  // ---- dashboard and insights
+  function openDashboard() {
+    if (overlayOpen) return
+    dashTab = 0
+    dashOpen = true
+    loadDashboard()
+  }
+
+  function closeDashboard() { dashOpen = false }
+
+  function loadDashboard() {
+    var g = ++dashGen
+    var path = "/dashboard?months=12&exclude_transfers=" + (dashTransfers ? "false" : "true")
+    Backend.request("GET", path, function(xhr) {
+      if (g !== dashGen) return
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j) { dashData = null; dashError = envelopeText(xhr); return }
+      dashData = j
+      dashError = ""
+    })
+  }
+
+  function insightPath(name) {
+    if (name === "recurring") return "/insights/recurring"
+    if (name === "anomalies") return "/insights/anomalies"
+    return "/insights/transfers"
+  }
+
+  function loadInsight(name) {
+    Backend.request("GET", insightPath(name), function(xhr) {
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      var d = Object.assign({}, insightData)
+      var e = Object.assign({}, insightErr)
+      if (!j) { d[name] = null; e[name] = envelopeText(xhr) }
+      else { d[name] = j; e[name] = "" }
+      insightData = d
+      insightErr = e
+    })
+  }
+
+  function switchDashTab(i) {
+    dashTab = i
+    var name = Insight.TABS[i]
+    if (name !== "dashboard") loadInsight(name)
+  }
+
+  // The rows of a list tab (recurring series, anomalies, transfer pairs).
+  function dashItems(name) {
+    var b = insightData[name]
+    if (!b) return []
+    if (name === "recurring") return b.series || []
+    if (name === "anomalies") return b.items || []
+    return b.pairs || []
+  }
+
+  function moveDashCursor(dir) {
+    var name = Insight.TABS[dashTab]
+    if (name === "dashboard") return
+    var c = Object.assign({}, dashCursors)
+    c[name] = Insight.moveIndex(c[name] || 0, dir, dashItems(name).length)
+    dashCursors = c
+  }
+
+  // Enter: the table jumps to the rows of this series, anomaly or pair, then the overlay closes.
+  function jumpFromDash() {
+    var name = Insight.TABS[dashTab]
+    var items = dashItems(name)
+    if (items.length === 0) return
+    var row = items[Insight.clamp((dashCursors[name] || 0), items.length)]
+    var q = Insight.jumpQueryFor(name, row)
+    if (q === "") { toast("nothing to jump to"); return }
+    closeDashboard()
+    applySlash(q, null)
+  }
+
+  function dashAct(id) {
+    if (id === "dash.close") closeDashboard()
+    else if (id === "dash.next") switchDashTab(Insight.nextTab(dashTab, 1))
+    else if (id === "dash.prev") switchDashTab(Insight.nextTab(dashTab, -1))
+    else if (id === "dash.down") moveDashCursor(1)
+    else if (id === "dash.up") moveDashCursor(-1)
+    else if (id === "dash.jump") jumpFromDash()
+    else if (id === "dash.transfers") { dashTransfers = !dashTransfers; loadDashboard() }
+  }
+
+  // ---- review queue
+  function openReview() {
+    if (overlayOpen) return
+    reviewOpen = true
+    reviewDirty = false
+    reviewCursor = 0
+    reviewRows = []
+    reviewError = ""
+    loadSuggestAccuracy()
+    reviewReload(false)
+  }
+
+  function closeReview() {
+    reviewOpen = false
+    reviewGen++
+    if (reviewDirty) { reviewDirty = false; afterChange() }
+  }
+
+  // GET /review, first page. keepCursor: the cursor keeps its place (clamped) after the reload.
+  function reviewReload(keepCursor) {
+    var g = ++reviewGen
+    var keep = keepCursor ? reviewCursor : 0
+    reviewLoading = true
+    Backend.request("GET", "/review?limit=" + Insight.REVIEW_PAGE + "&offset=0", function(xhr) {
+      if (g !== reviewGen) return
+      reviewLoading = false
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j || !j.rows) { reviewRows = []; reviewError = envelopeText(xhr); return }
+      reviewError = ""
+      reviewMode = String(j.mode || "")
+      reviewRemaining = Number(j.remaining) || 0
+      if (!keepCursor) reviewStart = reviewRemaining
+      reviewLastPage = j.rows.length
+      reviewRows = j.rows
+      reviewCursor = Insight.clamp(keep, j.rows.length)
+    })
+  }
+
+  // The next page, appended, when the queue holds more rows than are loaded.
+  function reviewMore() {
+    if (reviewLoading || !Insight.reviewHasMore(reviewRows.length, reviewRemaining, reviewLastPage)) return
+    var g = reviewGen
+    reviewLoading = true
+    var path = "/review?limit=" + Insight.REVIEW_PAGE + "&offset=" + Insight.reviewNextOffset(reviewRows)
+    Backend.request("GET", path, function(xhr) {
+      if (g !== reviewGen) return
+      reviewLoading = false
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j || !j.rows) { reviewError = envelopeText(xhr); return }
+      reviewLastPage = j.rows.length
+      reviewRemaining = Number(j.remaining) || 0
+      reviewRows = reviewRows.concat(j.rows)
+    })
+  }
+
+  // Skip (dir +1) or previous (dir -1). Skipping the last loaded row fetches the next page first.
+  function reviewStep(dir) {
+    if (dir > 0 && reviewCursor >= reviewRows.length - 1) reviewMore()
+    reviewCursor = dir > 0 ? Insight.reviewSkip(reviewCursor, reviewRows.length)
+                           : Insight.reviewPrev(reviewCursor, reviewRows.length)
+  }
+
+  // 1 2 3: accept the row's option n through the normal (undoable) categorize route.
+  function reviewPick(n) {
+    var row = reviewRows[reviewCursor]
+    if (!row) return
+    var opt = Insight.optionFor(row.options, n)
+    if (!opt) { toast("this row has no suggestion " + n); return }
+    reviewAssign(row, Number(opt.category_id), String(opt.path))
+  }
+
+  function reviewAssign(row, catId, path) {
+    var id = Number(row.id)
+    if (reviewInFlight[id]) return
+    var f = Object.assign({}, reviewInFlight)
+    f[id] = true
+    reviewInFlight = f
+    Backend.json("POST", "/transactions/categorize", { ids: [id], category_id: catId }, function(xhr) {
+      var g = Object.assign({}, reviewInFlight)
+      delete g[id]
+      reviewInFlight = g
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j) { toast(envelopeText(xhr)); return }
+      var at = Insight.reviewIndexOfId(reviewRows, id)
+      if (at >= 0 && at < reviewCursor) reviewCursor = reviewCursor - 1
+      reviewRows = Insight.removeRow(reviewRows, id)
+      reviewRemaining = Math.max(0, reviewRemaining - 1)
+      reviewCursor = Insight.cursorAfterRemove(reviewCursor, reviewRows.length)
+      reviewDirty = true
+      toast(String(j.label || path) + "   u to undo")
+      if (reviewRows.length < 10) reviewMore()
+    })
+  }
+
+  // c: the normal category picker for this row. C: the Phase 4 preview, bootstrap mode only.
+  function reviewCategorize(smart) {
+    var row = reviewRows[reviewCursor]
+    if (!row) return
+    if (smart && reviewMode !== "frequency") { toast("C previews a payee group in bootstrap mode"); return }
+    catIds = [Number(row.id)]
+    smartFlow = smart
+    openCategorize()
+  }
+
+  function reviewAct(id) {
+    if (id === "review.close") closeReview()
+    else if (id === "review.skip") reviewStep(1)
+    else if (id === "review.prev") reviewStep(-1)
+    else if (id === "review.categorize") reviewCategorize(false)
+    else if (id === "review.smart") reviewCategorize(true)
+    else if (id === "review.undo") history("undo")
+    else if (id.indexOf("review.pick") === 0) reviewPick(Number(id.substring(11)))
+  }
+
+  // ---- detail pane suggestion (uncategorized rows only)
+  function loadDetailSuggestion() {
+    var t = detailData
+    if (!t) return
+    var uncat = t.category_id === undefined ? !t.category : t.category_id === null
+    if (!uncat) { detailSuggGen++; detailSugg = null; return }
+    var id = Number(t.id)
+    var g = ++detailSuggGen
+    Backend.json("POST", "/suggest", { ids: [id] }, function(xhr) {
+      if (g !== detailSuggGen) return
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j) { detailSugg = null; suggError = envelopeText(xhr); return }
+      suggError = ""
+      suggState = { enabled: j.enabled === true, reason: j.reason || null, accuracy: j.accuracy || null }
+      var row = null
+      var list = j.suggestions || []
+      for (var i = 0; i < list.length; i++) if (Number(list[i].id) === id) row = list[i]
+      detailSugg = row
+    })
+  }
+
+  // Ctrl-y in the detail pane: accept the top suggestion (undoable with u).
+  function suggestAccept() {
+    var t = detailData
+    if (!t) return
+    if (!suggState || suggState.enabled !== true) { toast("suggestions are off: " + Insight.offReason(suggState)); return }
+    var top = Insight.topOption(detailSugg)
+    if (!top) { toast("no suggestion for this row"); return }
+    var id = Number(t.id)
+    Backend.json("POST", "/transactions/categorize", { ids: [id], category_id: Number(top.category_id) }, function(xhr) {
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j) { toast(envelopeText(xhr)); return }
+      toast(String(j.label || top.path) + "   u to undo")
+      afterChange()
+      loadDetail()
+    })
+  }
+
   function scopesNow() {
     if (zone === "sidebar") return ["sidebar", "global"]
     if (zone === "detail") return ["detail", "global"]
@@ -1911,6 +2201,9 @@ FocusScope {
         sidebarOpen = !sidebarOpen
         if (!sidebarOpen && zone === "sidebar") zone = "table"
         break
+      case "dash.open": openDashboard(); break
+      case "review.open": openReview(); break
+      case "suggest.accept": suggestAccept(); break
       case "focus.next": cycleFocus(1); break
       case "focus.prev": cycleFocus(-1); break
       case "pane.left": paneStep(-1); break
@@ -2191,6 +2484,9 @@ FocusScope {
         txn: root.detailData
         loading: root.detailLoading
         error: root.detailError
+        suggState: root.suggState
+        suggRow: root.detailSugg
+        suggError: root.suggError
         focusedPane: root.zone === "detail"
       }
     }
@@ -2265,6 +2561,38 @@ FocusScope {
     status: root.mgrStatus
     statusError: root.mgrStatusError
     onAct: function(id) { root.mgrAct(id) }
+  }
+
+  Dashboard {
+    id: dashView
+    anchors.fill: parent
+    open: root.dashOpen
+    tab: root.dashTab
+    dash: root.dashData
+    dashError: root.dashError
+    includeTransfers: root.dashTransfers
+    insight: root.insightData
+    insightErr: root.insightErr
+    cursors: root.dashCursors
+    onAct: function(id) { root.dashAct(id) }
+    onOpenChanged: if (!open) Qt.callLater(root.restoreFocus)
+  }
+
+  ReviewQueue {
+    id: review
+    anchors.fill: parent
+    open: root.reviewOpen
+    rows: root.reviewRows
+    mode: root.reviewMode
+    remaining: root.reviewRemaining
+    startRemaining: root.reviewStart
+    cursor: root.reviewCursor
+    loading: root.reviewLoading
+    error: root.reviewError
+    suggState: root.suggState
+    suggError: root.suggError
+    onAct: function(id) { root.reviewAct(id) }
+    onOpenChanged: if (!open) Qt.callLater(root.restoreFocus)
   }
 
   SmartPreview {

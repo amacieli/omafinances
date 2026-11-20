@@ -319,7 +319,7 @@ mod tests {
             format!("{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", method, path, port)
         };
         // without a token every new route is refused by the guard, whatever the method
-        for (m, p) in [("GET", "/transactions"), ("GET", "/transactions/1"), ("GET", "/accounts"), ("GET", "/categories"), ("POST", "/refresh"), ("GET", "/refresh"), ("POST", "/categories"), ("POST", "/categories/1/rename"), ("POST", "/categories/1/kind"), ("POST", "/categories/1/move"), ("POST", "/categories/1/shift"), ("POST", "/categories/1/delete"), ("POST", "/categories/1/merge"), ("POST", "/transactions/categorize"), ("POST", "/undo"), ("POST", "/redo"), ("GET", "/journal"), ("POST", "/smart/preview"), ("POST", "/smart/rows"), ("POST", "/smart/apply"), ("GET", "/rules")] {
+        for (m, p) in [("GET", "/transactions"), ("GET", "/transactions/1"), ("GET", "/accounts"), ("GET", "/categories"), ("POST", "/refresh"), ("GET", "/refresh"), ("POST", "/categories"), ("POST", "/categories/1/rename"), ("POST", "/categories/1/kind"), ("POST", "/categories/1/move"), ("POST", "/categories/1/shift"), ("POST", "/categories/1/delete"), ("POST", "/categories/1/merge"), ("POST", "/transactions/categorize"), ("POST", "/undo"), ("POST", "/redo"), ("GET", "/journal"), ("POST", "/smart/preview"), ("POST", "/smart/rows"), ("POST", "/smart/apply"), ("GET", "/rules"), ("POST", "/suggest"), ("GET", "/suggest"), ("GET", "/suggest/accuracy"), ("POST", "/suggest/accuracy"), ("GET", "/review"), ("POST", "/review"), ("GET", "/insights/recurring"), ("GET", "/insights/anomalies"), ("GET", "/insights/transfers"), ("POST", "/insights/transfers"), ("GET", "/dashboard"), ("POST", "/dashboard")] {
             assert_eq!(raw(port, &no_token(m, p)).status, 401, "{} {}", m, p);
         }
         // with a token they reach the router; this state has no database, so data routes say 503
@@ -339,6 +339,20 @@ mod tests {
             ("GET", "/rules", 503),
             ("GET", "/smart/apply", 405),
             ("POST", "/rules", 405),
+            ("POST", "/suggest", 503),
+            ("GET", "/suggest", 405),
+            ("GET", "/suggest/accuracy", 503),
+            ("POST", "/suggest/accuracy", 405),
+            ("GET", "/review", 503),
+            ("POST", "/review", 405),
+            ("GET", "/insights/recurring", 503),
+            ("GET", "/insights/anomalies", 503),
+            ("GET", "/insights/transfers", 503),
+            ("POST", "/insights/anomalies", 405),
+            ("GET", "/dashboard", 503),
+            ("POST", "/dashboard", 405),
+            ("GET", "/insights", 404),
+            ("GET", "/insights/other", 404),
         ] {
             assert_eq!(raw(port, &ui_request(m, p, port, TOKEN)).status, want, "{} {}", m, p);
         }

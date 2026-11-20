@@ -16,9 +16,10 @@ use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::sync::{Mutex, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 mod edit;
+mod insight;
 mod slash;
 mod smart;
 
@@ -39,11 +40,13 @@ pub struct AppState {
     today_override: Option<NaiveDate>,
     /// Serialises history read-modify-write.
     history_lock: Mutex<()>,
+    /// Phase 5 derived model for the current cache; cleared (under the cache write lock) on every refresh.
+    insight: Mutex<Option<Arc<crate::insight::Model>>>,
 }
 
 impl AppState {
     pub fn new(settings: Settings, db: Result<Db, String>, version: &'static str) -> AppState {
-        AppState { settings, db, version, cache: RwLock::new(None), config_dir: None, today_override: None, history_lock: Mutex::new(()) }
+        AppState { settings, db, version, cache: RwLock::new(None), config_dir: None, today_override: None, history_lock: Mutex::new(()), insight: Mutex::new(None) }
     }
 
     /// Set the directory that holds the search history file.
@@ -69,7 +72,12 @@ impl AppState {
         let db = self.db.as_ref().map_err(|e| anyhow!("database unavailable: {}", e))?;
         let cache = Cache::load(db)?;
         let n = cache.txns.len();
-        *self.cache.write().unwrap_or_else(|e| e.into_inner()) = Some(cache);
+        {
+            let mut w = self.cache.write().unwrap_or_else(|e| e.into_inner());
+            *w = Some(cache);
+            // Cleared while the write lock is held, so a reader never pairs the new cache with the old model.
+            *self.insight.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
         Ok(n)
     }
 
@@ -102,6 +110,13 @@ pub fn route_name(path: &str) -> &'static str {
         Route::SmartRows => "smart_rows",
         Route::SmartApply => "smart_apply",
         Route::Rules => "rules",
+        Route::Suggest => "suggest",
+        Route::SuggestAccuracy => "suggest_accuracy",
+        Route::Review => "review",
+        Route::InsightsRecurring => "insights_recurring",
+        Route::InsightsAnomalies => "insights_anomalies",
+        Route::InsightsTransfers => "insights_transfers",
+        Route::Dashboard => "dashboard",
         Route::Unknown => "unknown",
     }
 }
@@ -128,6 +143,13 @@ enum Route<'a> {
     SmartRows,
     SmartApply,
     Rules,
+    Suggest,
+    SuggestAccuracy,
+    Review,
+    InsightsRecurring,
+    InsightsAnomalies,
+    InsightsTransfers,
+    Dashboard,
     Unknown,
 }
 
@@ -151,6 +173,13 @@ fn route(path: &str) -> Route<'_> {
         "/smart/rows" => Route::SmartRows,
         "/smart/apply" => Route::SmartApply,
         "/rules" => Route::Rules,
+        "/suggest" => Route::Suggest,
+        "/suggest/accuracy" => Route::SuggestAccuracy,
+        "/review" => Route::Review,
+        "/insights/recurring" => Route::InsightsRecurring,
+        "/insights/anomalies" => Route::InsightsAnomalies,
+        "/insights/transfers" => Route::InsightsTransfers,
+        "/dashboard" => Route::Dashboard,
         _ => {
             if let Some(rest) = path.strip_prefix("/transactions/") {
                 if !rest.is_empty() && !rest.contains('/') {
@@ -200,7 +229,7 @@ pub fn handle_body(state: &AppState, method: &str, path: &str, query: &str, body
         Route::Refresh | Route::CategoryAction(_, _) | Route::Categorize | Route::Undo | Route::Redo => {
             &["POST"]
         }
-        Route::SmartPreview | Route::SmartRows | Route::SmartApply => &["POST"],
+        Route::SmartPreview | Route::SmartRows | Route::SmartApply | Route::Suggest => &["POST"],
         Route::Categories => &["GET", "POST"],
         Route::Journal => &["GET"],
         Route::Views | Route::History => &["GET", "POST"],
@@ -238,6 +267,13 @@ pub fn handle_body(state: &AppState, method: &str, path: &str, query: &str, body
         Route::SmartRows => smart::rows(state, body),
         Route::SmartApply => smart::apply(state, body),
         Route::Rules => smart::rules(state),
+        Route::Suggest => insight::suggest(state, body),
+        Route::SuggestAccuracy => insight::suggest_accuracy(state, query),
+        Route::Review => insight::review(state, query),
+        Route::InsightsRecurring => insight::recurring(state, query),
+        Route::InsightsAnomalies => insight::anomalies(state, query),
+        Route::InsightsTransfers => insight::transfers(state, query),
+        Route::Dashboard => insight::dashboard(state, query),
         Route::Unknown => error(404, "not found"),
     }
 }

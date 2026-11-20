@@ -21,10 +21,12 @@ var SCOPE_TITLES = {
   prompt: "Typed input (amount, dates, text)",
   manager: "Category manager (m; keys work inside the overlay)",
   smart: "Categorize with preview (C; keys work inside the overlay)",
+  dash: "Dashboard and insights (D; keys work inside the overlay)",
+  review: "Review queue (R; keys work inside the overlay)",
   help: "This help"
 }
 
-var SCOPE_ORDER = ["global", "table", "manager", "smart", "sidebar", "detail", "search", "picker", "prompt", "help"]
+var SCOPE_ORDER = ["global", "table", "manager", "smart", "dash", "review", "sidebar", "detail", "search", "picker", "prompt", "help"]
 
 var BINDINGS = [
   // ---- anywhere
@@ -49,6 +51,8 @@ var BINDINGS = [
   { id: "views.open", scope: "global", keys: ["v"], label: "Saved views (Enter applies, d deletes)" },
   { id: "manager.open", scope: "global", keys: ["m"], label: "Category manager: tree, add, rename, move, delete, merge" },
   { id: "undo", scope: "global", keys: ["u"], label: "Undo the last change (categorizing, category edits)" },
+  { id: "dash.open", scope: "global", keys: ["D"], label: "Dashboard: monthly and category totals, top payees; Tab moves to Recurring, Anomalies, Transfers" },
+  { id: "review.open", scope: "global", keys: ["R"], label: "Review queue: uncategorized rows with numbered suggestions (1 2 3 accept)" },
   { id: "redo", scope: "global", keys: ["C-r"], label: "Redo" },
   { id: "quit", scope: "global", keys: ["q"], label: "Quit" },
 
@@ -111,7 +115,26 @@ var BINDINGS = [
   { id: "filter.clearFacet", scope: "sidebar", keys: ["x"], label: "Clear the account or category filter" },
   { id: "focus.table", scope: "sidebar", keys: ["Esc"], label: "Back to the table" },
 
+  // ---- dashboard and insights (D; overlay)
+  { id: "dash.close", scope: "dash", keys: ["Esc"], label: "Close" },
+  { id: "dash.next", scope: "dash", keys: ["Tab"], label: "Next tab: Dashboard, Recurring, Anomalies, Transfers" },
+  { id: "dash.prev", scope: "dash", keys: ["S-Tab"], label: "Previous tab" },
+  { id: "dash.down", scope: "dash", keys: ["j", "Down"], label: "Move down the list (on the Dashboard tab: scroll down)" },
+  { id: "dash.up", scope: "dash", keys: ["k", "Up"], label: "Move up the list (on the Dashboard tab: scroll up)" },
+  { id: "dash.jump", scope: "dash", keys: ["Enter"], label: "Jump the table to this series, anomaly or transfer pair (closes the overlay)" },
+  { id: "dash.transfers", scope: "dash", keys: ["t"], label: "Include or exclude transfers in the Dashboard totals" },
+  // ---- review queue (R; overlay)
+  { id: "review.pick1", scope: "review", keys: ["1"], label: "Accept suggestion 1 (undoable with u)" },
+  { id: "review.pick2", scope: "review", keys: ["2"], label: "Accept suggestion 2 (undoable with u)" },
+  { id: "review.pick3", scope: "review", keys: ["3"], label: "Accept suggestion 3 (undoable with u)" },
+  { id: "review.categorize", scope: "review", keys: ["c"], label: "Categorize this row with the picker" },
+  { id: "review.smart", scope: "review", keys: ["C"], label: "Preview and clear this payee group (bootstrap mode only)" },
+  { id: "review.skip", scope: "review", keys: ["s"], label: "Skip: leave this row in the queue, go to the next" },
+  { id: "review.prev", scope: "review", keys: ["Backspace"], label: "Previous row" },
+  { id: "review.undo", scope: "review", keys: ["u"], label: "Undo the last change" },
+  { id: "review.close", scope: "review", keys: ["Esc"], label: "Leave the review queue" },
   // ---- detail pane
+  { id: "suggest.accept", scope: "detail", keys: ["C-y"], label: "Accept the suggested category for this uncategorized row (undoable with u)" },
   { id: "detail.down", scope: "detail", keys: ["j", "Down"], label: "Scroll down" },
   { id: "detail.up", scope: "detail", keys: ["k", "Up"], label: "Scroll up" },
   { id: "detail.pagedown", scope: "detail", keys: ["PgDown"], label: "Scroll down a page" },

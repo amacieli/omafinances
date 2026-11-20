@@ -26,6 +26,8 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `X` | Clear the newest filter chip |
 | `r` | Refresh from Lunch Money, then reload |
 | `m` | Category manager (full pane; see below) |
+| `D` | Dashboard and insights (monthly and category totals; see below) |
+| `R` | Review queue: uncategorized rows with numbered suggestions (see below) |
 | `u` | Undo the last change (categorizing, category edits); toast says what was undone |
 | `Ctrl-r` | Redo the change that was undone |
 | `/` | Slash search bar (type terms; `:` starts a command; again: reopens it with the active query) |
@@ -89,6 +91,32 @@ The header reads `Will categorize N of M uncategorized · K conflicts skipped ·
 
 Keys for the picker step are the usual ones; the preview only appears after a category is chosen.
 
+### Dashboard and insights (`D`; overlay, keys work inside it)
+
+Tabs: Dashboard (monthly out and in bars, category bars with share of total out, top payees, and a note on the transfers left out), Recurring, Anomalies, Transfers. Totals exclude transfer rows unless `t` includes them.
+
+| Key | Action |
+| --- | --- |
+| `Tab` / `Shift-Tab` | Next / previous tab |
+| `j` / `Down`, `k` / `Up` | Move down / up the list (on the Dashboard tab: scroll) |
+| `Enter` | Jump the table to that series, anomaly or transfer pair (the query is `p:"name"` for series, `id:N` for an anomaly, `id:N,M` for a pair), then close |
+| `t` | Include or exclude transfers in the Dashboard totals |
+| `Esc` | Close |
+
+### Review queue (`R`; overlay, keys work inside it)
+
+One uncategorized row at a time. The header says which mode the queue is in: `Suggestions: top-3 accuracy ...` once the gate is open, or `Bootstrap: biggest payees first` with what unlocks suggestions. Rows are shown biggest payee group first in bootstrap mode.
+
+| Key | Action |
+| --- | --- |
+| `1` / `2` / `3` | Accept that suggestion (the normal `POST /transactions/categorize`; `u` undoes it) |
+| `c` | Categorize this row with the category picker |
+| `C` | Preview and clear this payee group in one step (bootstrap mode only) |
+| `s` | Skip: leave the row in the queue, go to the next |
+| `Backspace` | Previous row |
+| `u` | Undo the last change |
+| `Esc` | Leave the queue |
+
 ### Sidebar (focus: sidebar, Tab)
 
 | Key | Action |
@@ -112,6 +140,7 @@ Keys for the picker step are the usual ones; the preview only appears after a ca
 | `PgDown` / `PgUp` | Scroll down / up a page |
 | `i` / `Enter` | Close the detail pane |
 | `Esc` | Back to the table |
+| `Ctrl-y` | Accept the suggested category for an uncategorized row (the ghost chip; `u` undoes it). Off with the reason shown when suggestions are disabled |
 
 ### Pickers: filter menu, sort, sub-pickers
 
