@@ -21,13 +21,16 @@ function fuzzyScore(query, text) {
   return 100 - (last - first)
 }
 
-// Filters and ranks a list of entries {key,label,detail} by `query` against label and detail.
-// Entries that did not match are dropped; order is by score, then the original order.
+// Filters and ranks a list of entries {key,label,detail,match} by `query`. The primary text is
+// `match` when the entry has one (a category's full path, so "hm" finds "Home › Maintenance"),
+// else `label`; the detail counts a little less. Entries that did not match are dropped; order is
+// by score, then the original order.
 function filterEntries(entries, query) {
   var scored = []
   for (var i = 0; i < entries.length; i++) {
     var e = entries[i]
-    var s = Math.max(fuzzyScore(query, e.label), fuzzyScore(query, e.detail || "") - 50)
+    var primary = e.match !== undefined ? e.match : e.label
+    var s = Math.max(fuzzyScore(query, primary), fuzzyScore(query, e.detail || "") - 50)
     if (s >= 0) scored.push({ e: e, s: s, i: i })
   }
   if (String(query || "").trim() !== "") scored.sort(function(a, b) { return b.s - a.s || a.i - b.i })

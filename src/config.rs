@@ -20,6 +20,14 @@ pub struct Settings {
     pub database: DatabaseSettings,
     pub ui: UiSettings,
     pub mcp: McpSettings,
+    pub categories: CategorySettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct CategorySettings {
+    /// Deepest level a category may sit at (top level is 1). Clamped to 1..=6.
+    pub max_depth: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -45,7 +53,17 @@ pub struct McpSettings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { database: DatabaseSettings::default(), ui: UiSettings::default(), mcp: McpSettings::default() }
+        Settings {
+            database: DatabaseSettings::default(),
+            ui: UiSettings::default(),
+            mcp: McpSettings::default(),
+            categories: CategorySettings::default(),
+        }
+    }
+}
+impl Default for CategorySettings {
+    fn default() -> Self {
+        CategorySettings { max_depth: 3 }
     }
 }
 impl Default for DatabaseSettings {
@@ -70,6 +88,7 @@ impl Settings {
         if !(0.5..=3.0).contains(&self.ui.scale_factor) {
             self.ui.scale_factor = 1.0;
         }
+        self.categories.max_depth = self.categories.max_depth.clamp(1, 6);
         self
     }
 }
@@ -152,6 +171,20 @@ mod tests {
         s2.ui.scale_factor = 1.25;
         save(&d, &s2).unwrap();
         assert_eq!(load_or_init(&d).unwrap().ui.scale_factor, 1.25);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn category_max_depth_defaults_to_three_and_is_clamped() {
+        let d = scratch("cfg3");
+        ensure_private_dir(&d).unwrap();
+        assert_eq!(load_or_init(&d).unwrap().categories.max_depth, 3);
+        fs::write(settings_path(&d), "[categories]\nmax_depth = 9\n").unwrap();
+        assert_eq!(load_or_init(&d).unwrap().categories.max_depth, 6);
+        fs::write(settings_path(&d), "[categories]\nmax_depth = 0\n").unwrap();
+        assert_eq!(load_or_init(&d).unwrap().categories.max_depth, 1);
+        fs::write(settings_path(&d), "[categories]\nmax_depth = 2\n").unwrap();
+        assert_eq!(load_or_init(&d).unwrap().categories.max_depth, 2);
         let _ = fs::remove_dir_all(&d);
     }
 

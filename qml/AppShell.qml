@@ -9,6 +9,8 @@ import "common"
 import "views"
 import "common/Fuzzy.js" as Fuzzy
 import "state/Search.js" as Search
+import "state/Marks.js" as Marks
+import "state/Tree.js" as Tree
 
 // OmaFinances window content: header, filter chips, sidebar | transaction table | detail, footer.
 // Read-only. keys/Keymap.js is the source of truth for every key (docs/KEYS.md follows it).
@@ -47,6 +49,15 @@ FocusScope {
   property int rowsGen: 0        // bumped by a table reload; older responses are dropped
   property var restore: null     // {id, index}: keep the selected transaction across a reload
   property int cursor: 0         // highlighted table row
+  // Multi-select: committed marks {txid: true}. While visualOn, the rows from visualAnchor to the
+  // cursor are marked too. markedSet is the effective set (the row highlight), markCount its size.
+  property var marks: ({})
+  property var markedSet: ({})
+  property int markCount: 0
+  property bool visualOn: false
+  property int visualAnchor: -1
+  property bool markAllPending: false
+  readonly property int markCap: 5000
 
   // ------------------------------------------------------------------ query state
   // The one place table filters live. Query.buildQuery() is the only converter to a query string.
@@ -70,6 +81,20 @@ FocusScope {
   property var accountList: []   // raw /accounts rows
   property var categoryList: []  // raw /categories rows
   property int uncategorizedCount: 0
+  // Categories: the settings max depth, the category manager (overlay and cursor), and the
+  // transactions/category a picker or prompt is about.
+  property int maxDepth: 0
+  property bool managerOpen: false
+  property int mgrIndex: 0
+  property int mgrCursorId: -1        // the manager cursor's node id, kept across reloads
+  property string mgrStatus: ""
+  property bool mgrStatusError: false
+  property var catIds: []             // transactions the categorize picker acts on
+  property var pendingCat: null       // {id, name, count, kids, into, intoName}: delete or merge target
+  property int promptGen: 0           // bumped when a prompt opens or closes; stale replies are dropped
+  property var mgrPendingParent: null // add: the new node's parent (null = top level)
+  property int mgrPendingAfter: -1    // sibling add: the cursor node's index among its siblings
+  property int mgrPendingId: -1       // rename target
 
   // Overlay context: which picker or prompt is up. Sub-pickers return to the filter menu.
   property string pickerCtx: ""  // "filter" | "account" | "category" | "date" | "flow" | "sort"
@@ -103,7 +128,7 @@ FocusScope {
   ListModel { id: rows }
   ListModel { id: sideRows }
 
-  readonly property bool overlayOpen: picker.open || prompt.open || help.open || searchBar.open
+  readonly property bool overlayOpen: picker.open || prompt.open || help.open || searchBar.open || managerOpen
 
   // ------------------------------------------------------------------ helpers
   function parseJson(text) {
@@ -177,6 +202,7 @@ FocusScope {
     Backend.request("GET", "/settings", function(xhr) {
       if (xhr.status !== 200) return
       var j = parseJson(xhr.responseText)
+      if (j && typeof j.max_depth === "number") root.maxDepth = j.max_depth
       if (j && typeof j.scale_factor === "number" && j.scale_factor > 0)
         root.uiScale = Math.min(3, Math.max(0.5, j.scale_factor))
     })
@@ -205,6 +231,7 @@ FocusScope {
       if (pending > 0) return
       accountList = accounts
       categoryList = categories
+      syncFilterLabel()
       uncategorizedCount = uncat
       rebuildSidebar()
     }
@@ -242,6 +269,8 @@ FocusScope {
                         depth: 0, count: Number(a.count) || 0, sel: false, query: "" })
     }
     sideRows.append({ rowKind: "header", key: "", label: "Categories", depth: 0, count: 0, sel: false, query: "" })
+    if (categoryList.length === 0)
+      sideRows.append({ rowKind: "note", key: "", label: "No categories yet: press m", depth: 0, count: 0, sel: false, query: "" })
     for (var j = 0; j < categoryList.length; j++) {
       var c = categoryList[j]
       sideRows.append({ rowKind: "category", key: String(c.id), label: String(c.name || c.id),
@@ -318,11 +347,12 @@ FocusScope {
     Backend.request("GET", url, function(xhr) {
       if (gen !== root.rowsGen) return
       pageBusy = false
-      if (xhr.status === 0) { setUnreachable(); seekEnd = false; restore = null; return }
+      if (xhr.status === 0) { setUnreachable(); markAllPending = false; seekEnd = false; restore = null; return }
       var j = parseJson(xhr.responseText)
       if (xhr.status === 400) {
         // The UI validates input before it gets here, so this is a bug report, not a user error.
         toast("filter rejected: " + ((j && j.error) || "bad request"))
+        markAllPending = false
         seekEnd = false
         restore = null
         return
@@ -330,6 +360,7 @@ FocusScope {
       if (xhr.status !== 200 || !j || !j.rows) {
         backendState = "error"
         backendDetail = describeHttp(xhr)
+        markAllPending = false
         seekEnd = false
         restore = null
         return
@@ -345,7 +376,8 @@ FocusScope {
           account: String(r.account || ""),
           category: r.category ? String(r.category) : "",
           pending: !!r.pending,
-          recurring: !!r.recurring
+          recurring: !!r.recurring,
+          marked: !!markedSet[String(Number(r.id) || 0)]
         })
       }
       total = Number(j.total) || rows.count
@@ -356,6 +388,7 @@ FocusScope {
       sumIn = Number(j.sum_in) || 0
       summaryKnown = true
       backendState = "ok"
+      if (markAllPending) markAllStep()
       if (restore) settleSelection()
       else if (seekEnd) seekFinish()
       else maybePrefetch()
@@ -365,6 +398,11 @@ FocusScope {
   // Rebuilds the table from the first page. The selected transaction is kept when it still
   // matches; otherwise the selection falls back to `fallbackIndex`.
   function reloadRows(fallbackIndex) {
+    // A reload starts from the first page: a visual range and a pending mark-all end here.
+    visualOn = false
+    visualAnchor = -1
+    markAllPending = false
+    refreshMarks()
     var id = currentTxid()
     rowsGen++
     rows.clear()
@@ -429,6 +467,7 @@ FocusScope {
   // ------------------------------------------------------------------ filters and sort
   function applyFilter(f) {
     filter = f
+    marks = ({})     // marks belong to the filtered list they were made on
     refreshSideSelection()
     reloadRows(0)
   }
@@ -558,6 +597,8 @@ FocusScope {
 
   function openPrompt(ctx) {
     promptCtx = ctx
+    promptGen++
+    prompt.closeOnSubmit = true
     if (ctx === "amount") {
       prompt.title = "Amount"
       prompt.hint = "10..50 between two amounts, >100 above, <20 below. Money out is positive, money in negative."
@@ -581,6 +622,10 @@ FocusScope {
 
   // The prompt has already validated the text, so the parsers below only ever see good input.
   function onPromptSubmitted(text) {
+    if (promptCtx === "newCat") { createAndAssign(text); return }
+    if (promptCtx === "mgrAdd") { mgrCreate(text, false); return }
+    if (promptCtx === "mgrSibling") { mgrCreate(text, true); return }
+    if (promptCtx === "mgrRename") { mgrRename(text); return }
     var f = Object.assign({}, filter)
     if (promptCtx === "amount") {
       var a = Query.parseAmount(text)
@@ -601,6 +646,7 @@ FocusScope {
   function onPickerChosen(key) {
     var ctx = pickerCtx
     var f
+    if (categoryPickerChosen(ctx, key)) return
     if (ctx === "views") { applyViewId(key); return }
     if (ctx === "viewConfirm") {
       var from = viewConfirmFrom
@@ -654,6 +700,7 @@ FocusScope {
   }
 
   function onPickerCancelled() {
+    if (isCategoryCtx(pickerCtx)) return
     if (pickerCtx === "views") return
     if (pickerCtx === "viewConfirm") { if (viewConfirmFrom === "views") openViewsPicker(); return }
     // A sub-picker opened from the filter menu goes back to that menu.
@@ -661,6 +708,9 @@ FocusScope {
   }
 
   function onPromptCancelled() {
+    promptGen++
+    if (promptCtx === "newCat") { openCategorize(); return }
+    if (promptCtx.indexOf("mgr") === 0) return
     if (promptCtx === "date") openDatePicker()
     else openFilterMenu()
   }
@@ -669,13 +719,14 @@ FocusScope {
   // text field after onOpenChanged runs, which would otherwise take focus away again. Skipped if
   // another overlay reopened in the meantime (a sub-picker, for example).
   function restoreFocus() {
-    if (overlayOpen) return
+    if (picker.open || prompt.open || help.open || searchBar.open) return
     // An overlay's text field keeps the window's active focus after the overlay is hidden, so keys
     // would go to an invisible field. Drop it explicitly, then take focus back.
     var a = root.Window.activeFocusItem
     if (a && a !== root) a.focus = false
     picker.focus = false; prompt.focus = false; help.focus = false
     searchBar.field.focus = false
+    if (managerOpen) { manager.focusKeys(); return }
     root.forceActiveFocus()
   }
 
@@ -707,6 +758,509 @@ FocusScope {
     detailOpen = !detailOpen
     if (!detailOpen && zone === "detail") zone = "table"
     if (detailOpen) { detailData = null; loadDetail() }
+  }
+
+  // ------------------------------------------------------------------ errors and history
+  // The backend's {message} for a failed request (a 409 says why, a 400 names the bad field).
+  function xhrMessage(xhr) {
+    if (xhr.status === 0) return "backend not responding (port " + Backend.port + ")"
+    var j = parseJson(xhr.responseText)
+    if (j && j.message) return String(j.message)
+    return describeHttp(xhr)
+  }
+
+  // u / C-r and :undo / :redo. The server names the change; a 409 (nothing to undo, conflict) says why.
+  function history(kind) {
+    Backend.request("POST", "/" + kind, function(xhr) {
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j) { toast(xhrMessage(xhr)); return }
+      toast((kind === "undo" ? "Undid: " : "Redid: ") + String(j.label || ""))
+      afterChange()
+    })
+  }
+
+  // :journal. A read-only picker of the last 20 batches, newest first; undone ones are marked.
+  function openJournal() {
+    Backend.request("GET", "/journal?limit=20", function(xhr) {
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j) { toast(xhrMessage(xhr)); return }
+      pickerCtx = "journal"
+      picker.title = "Journal: the last 20 changes, newest first"
+      picker.hint = (j.can_undo ? "u undoes: " + String(j.next_undo_label || "") : "nothing to undo")
+                    + (j.can_redo ? "   C-r redoes: " + String(j.next_redo_label || "") : "")
+      picker.emptyText = "no changes yet"
+      picker.deletable = false
+      picker.entries = Tree.journalEntries(j.rows || [])
+      picker.currentKey = ""
+      picker.show()
+    })
+  }
+
+  // Reloads the table and the sidebar after any change to transactions or categories.
+  function afterChange() {
+    loadFacets()
+    reloadRows(cursor)
+  }
+
+  // A category chip shows the category's current name (it may have been renamed in the manager).
+  function syncFilterLabel() {
+    if (filter.category === "" || filter.category === "none") return
+    var c = Tree.rowOf(categoryList, filter.category)
+    if (!c || String(c.name) === filter.categoryLabel) return
+    var f = Object.assign({}, filter)
+    f.categoryLabel = String(c.name)
+    filter = f
+  }
+
+  // ------------------------------------------------------------------ table: marks (multi-select)
+  function loadedIds() {
+    var out = []
+    for (var i = 0; i < rows.count; i++) out.push(Number(rows.get(i).txid))
+    return out
+  }
+
+  // Recomputes the effective marks: the header count and the highlight on every loaded row.
+  function refreshMarks() {
+    var ids = Marks.effectiveIds(loadedIds(), marks, visualOn, visualAnchor, cursor)
+    var set = {}
+    for (var k = 0; k < ids.length; k++) set[String(ids[k])] = true
+    markedSet = set
+    markCount = ids.length
+    for (var i = 0; i < rows.count; i++) {
+      var want = !!set[String(rows.get(i).txid)]
+      if (rows.get(i).marked !== want) rows.setProperty(i, "marked", want)
+    }
+  }
+
+  // Ends visual mode; the range becomes committed marks.
+  function endVisual() {
+    if (visualOn) marks = Marks.addAll({}, Marks.effectiveIds(loadedIds(), marks, true, visualAnchor, cursor))
+    visualOn = false
+    visualAnchor = -1
+    refreshMarks()
+  }
+
+  // V: start a visual range at the cursor; V again ends it and keeps the marks.
+  function toggleVisual() {
+    if (visualOn) { endVisual(); return }
+    if (currentTxid() < 0) { toast("no row under the cursor"); return }
+    visualOn = true
+    visualAnchor = cursor
+    refreshMarks()
+  }
+
+  // Space: mark or unmark the cursor row, then move down. A visual range is committed first.
+  function toggleMarkCursor() {
+    if (visualOn) endVisual()
+    var id = currentTxid()
+    if (id < 0) return
+    marks = Marks.toggle(marks, id)
+    refreshMarks()
+    moveRow(1)
+  }
+
+  // Esc in the table: end visual mode, else clear the marks, else quit (only with nothing marked).
+  function escapeTable() {
+    if (visualOn) { endVisual(); return }
+    if (markCount > 0) { marks = ({}); refreshMarks(); return }
+    root.closeRequested()
+  }
+
+  // C-a: mark every row that matches the filters. Pages load until every matching row (up to the
+  // cap) is in; markAllStep runs again after each page.
+  function markAll() {
+    if (visualOn) endVisual()
+    if (summaryKnown && total === 0) { toast("no rows match these filters"); return }
+    markAllPending = true
+    markAllStep()
+  }
+
+  function markAllStep() {
+    if (!markAllPending) return
+    var goal = Math.min(total, markCap)
+    if (rows.count < goal) { loadPage(); return }
+    markAllPending = false
+    var cap = Marks.capIds(loadedIds(), markCap)
+    marks = Marks.addAll(marks, cap.ids)
+    refreshMarks()
+    toast(cap.capped
+          ? "marked the first " + Query.fmtCount(markCap) + " of " + Query.fmtCount(total) + " matching rows (cap)"
+          : "marked " + Query.fmtCount(cap.ids.length) + " rows")
+  }
+
+  // ------------------------------------------------------------------ categorize (c)
+  // Target: the marked rows, else the cursor row. The picker is the generic Picker over the tree.
+  function startCategorize() {
+    if (visualOn) endVisual()
+    var list = Marks.effectiveIds(loadedIds(), marks, false, -1, -1)
+    if (list.length === 0) {
+      var id = currentTxid()
+      if (id < 0) { toast("no transaction under the cursor"); return }
+      list = [id]
+    }
+    catIds = list
+    openCategorize()
+  }
+
+  function openCategorize() {
+    var n = catIds.length
+    pickerCtx = "categorize"
+    picker.title = n === 1 ? "Categorize this transaction" : "Categorize " + Query.fmtCount(n) + " transactions"
+    picker.hint = categoryList.length === 0
+        ? "No categories yet: choose + New category, or press m for the category manager."
+        : "Type to filter. Full paths match: hm finds Home \u203a Maintenance."
+    picker.emptyText = "no matching category"
+    picker.deletable = false
+    picker.entries = Tree.pickerEntries(categoryList, {
+      uncategorized: categoryList.length > 0, uncatCount: uncategorizedCount, newEntry: true })
+    picker.currentKey = ""
+    picker.show()
+  }
+
+  // A transaction-category assignment. The table reloads keeping the cursor's transaction.
+  function assignCategory(ids, catId) {
+    if (ids.length === 0) return
+    Backend.json("POST", "/transactions/categorize", { ids: ids, category_id: catId }, function(xhr) {
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j) { toast(xhrMessage(xhr)); return }
+      toast(String(j.label || "categorized") + "   u to undo")
+      marks = ({})
+      visualOn = false
+      visualAnchor = -1
+      refreshMarks()
+      afterChange()
+    })
+  }
+
+  // "+ New category": the typed path is resolved; missing levels are created one by one, then the
+  // transactions are assigned. A 409 from the server (max depth) is shown inline.
+  function openNewCategory() {
+    openMgrPrompt("newCat", "New category",
+                  "Type a path from the top: Home/Pets/Dogs. Missing levels are created. Max depth " + maxDepth + ".",
+                  "Home/Pets/Dogs", "", true)
+  }
+
+  function createAndAssign(text) {
+    var p = Tree.parsePath(text)
+    if (p.error) { prompt.fail(p.error); return }
+    var r = Tree.resolvePath(categoryList, p.segments)
+    var ids = catIds
+    if (r.missing.length === 0) { prompt.close(); assignCategory(ids, r.id); return }
+    var gen = promptGen
+    prompt.busy = true
+    createChain(r.parentId, r.missing, 0, function(err, newId) {
+      if (gen !== promptGen) { loadFacets(); return }      // cancelled meanwhile: keep the new levels, assign nothing
+      if (err !== null) { prompt.fail(err); loadFacets(); return }
+      prompt.close()
+      assignCategory(ids, newId)
+    })
+  }
+
+  // Creates names[i] under pid, then the next one under it, and so on. done(err, lastId).
+  function createChain(pid, names, i, done) {
+    Backend.json("POST", "/categories", { parent_id: pid, name: names[i] }, function(xhr) {
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j) { done(xhrMessage(xhr), null); return }
+      if (i + 1 >= names.length) { done(null, Number(j.id)); return }
+      createChain(Number(j.id), names, i + 1, done)
+    })
+  }
+
+  // Closes the prompt on success. On failure the message goes inline when the prompt is still the
+  // one that asked, else to the manager's status line.
+  function settlePrompt(gen, ok, msg) {
+    if (gen === promptGen && prompt.open) {
+      if (ok) prompt.close()
+      else prompt.fail(msg)
+      return
+    }
+    if (!ok) mgrError(msg)
+  }
+
+  // Pickers opened by the category features. Returns true when the key was theirs.
+  function categoryPickerChosen(ctx, key) {
+    if (ctx === "categorize") {
+      if (key === "new") openNewCategory()
+      else assignCategory(catIds, key === "none" ? null : Number(key))
+      return true
+    }
+    if (ctx === "mgrDelete") {
+      if (key === "uncat") deleteCategory(pendingCat.id, null)
+      else if (key === "move") openReassign()
+      return true
+    }
+    if (ctx === "reassign") {
+      deleteCategory(pendingCat.id, key === "none" ? null : Number(key))
+      return true
+    }
+    if (ctx === "mergeTarget") {
+      pendingCat.into = Number(key)
+      pendingCat.intoName = Tree.pathOf(categoryList, key)
+      openMergeConfirm()
+      return true
+    }
+    if (ctx === "mgrMerge") {
+      if (key === "yes") mergeCategory(pendingCat.id, pendingCat.into)
+      return true
+    }
+    return ctx === "journal"
+  }
+
+  function isCategoryCtx(c) {
+    return ["categorize", "mgrDelete", "reassign", "mergeTarget", "mgrMerge", "journal"].indexOf(c) >= 0
+  }
+
+  // ------------------------------------------------------------------ category manager (m)
+  function mgrNode() {
+    return mgrIndex >= 0 && mgrIndex < categoryList.length ? categoryList[mgrIndex] : null
+  }
+
+  // Keeps the cursor on the same node id across reloads; else the nearest row.
+  function mgrSync() {
+    mgrIndex = Tree.restoreIndex(categoryList, mgrCursorId, mgrIndex)
+    if (mgrIndex < 0) mgrIndex = 0
+    var cur = mgrNode()
+    mgrCursorId = cur ? Number(cur.id) : -1
+  }
+
+  function mgrMove(d) {
+    if (categoryList.length === 0) return
+    mgrIndex = Math.max(0, Math.min(categoryList.length - 1, mgrIndex + d))
+    mgrCursorId = Number(categoryList[mgrIndex].id)
+  }
+
+  function mgrNote(msg) { mgrStatus = msg; mgrStatusError = false }
+  function mgrError(msg) { mgrStatus = msg; mgrStatusError = true }
+
+  function openManager() {
+    if (overlayOpen) return
+    mgrStatus = ""
+    mgrStatusError = false
+    loadFacets()
+    managerOpen = true
+    manager.focusKeys()
+  }
+
+  function closeManager() { managerOpen = false }
+
+  // Keys from the manager's scope. Actions on a node do nothing on an empty tree.
+  function mgrAct(id) {
+    var cur = mgrNode()
+    switch (id) {
+      case "mgr.down": mgrMove(1); break
+      case "mgr.up": mgrMove(-1); break
+      case "mgr.close": closeManager(); break
+      case "mgr.add": mgrOpenAdd(false); break
+      case "mgr.addSibling": mgrOpenAdd(true); break
+      case "mgr.rename": if (cur) mgrOpenRename(cur); break
+      case "mgr.outdent": if (cur) mgrOutdent(cur); break
+      case "mgr.indent": if (cur) mgrIndent(cur); break
+      case "mgr.shiftUp": if (cur) mgrShift(cur, -1); break
+      case "mgr.shiftDown": if (cur) mgrShift(cur, 1); break
+      case "mgr.kind": if (cur) mgrPost("/categories/" + cur.id + "/kind", { kind: Tree.kindNext(cur.kind) }, null, cur.id); break
+      case "mgr.delete": if (cur) openDeleteAsk(cur); break
+      case "mgr.merge": if (cur) openMergeTarget(cur); break
+      case "mgr.filter": if (cur) mgrFilter(cur); break
+    }
+  }
+
+  function openMgrPrompt(ctx, title, hint, placeholder, initial, pathMode) {
+    promptCtx = ctx
+    promptGen++
+    prompt.title = title
+    prompt.hint = hint
+    prompt.placeholder = placeholder
+    prompt.closeOnSubmit = false
+    prompt.validator = pathMode
+        ? function(t) { var r = Tree.parsePath(t); return r.error || "" }
+        : function(t) { var r = Tree.parseName(t); return r.error || "" }
+    prompt.show(initial)
+  }
+
+  // a: child of the cursor node (top level on an empty tree). A: sibling after the cursor node.
+  function mgrOpenAdd(sibling) {
+    var cur = mgrNode()
+    mgrPendingParent = cur ? Tree.pidOf(cur) : null
+    mgrPendingAfter = sibling && cur ? Tree.siblingIndex(categoryList, cur.id) : -1
+    var where = cur ? (sibling ? "After '" : "Under '") + cur.name + "'." : "Top level."
+    openMgrPrompt(sibling ? "mgrSibling" : "mgrAdd", sibling ? "Add a sibling" : "Add a child",
+                  where + " Names cannot contain /.", "name", "", false)
+  }
+
+  function mgrCreate(text, sibling) {
+    var p = Tree.parseName(text)
+    if (p.error) { prompt.fail(p.error); return }
+    var gen = promptGen
+    var parent = mgrPendingParent
+    var after = sibling ? mgrPendingAfter : -1
+    prompt.busy = true
+    Backend.json("POST", "/categories", { parent_id: parent, name: p.name }, function(xhr) {
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j) { settlePrompt(gen, false, xhrMessage(xhr)); return }
+      var newId = Number(j.id)
+      settlePrompt(gen, true, "")
+      mgrCursorId = newId
+      if (after >= 0) {
+        // The server appends the new node last; move it to sit right after the cursor node.
+        Backend.json("POST", "/categories/" + newId + "/move", { parent_id: parent, position: after + 1 }, function(x2) {
+          var j2 = x2.status === 200 ? parseJson(x2.responseText) : null
+          if (!j2) mgrError(xhrMessage(x2))
+          else mgrNote(String(j2.label || ""))
+          afterChange()
+        })
+        return
+      }
+      mgrNote(String(j.label || ""))
+      afterChange()
+    })
+  }
+
+  function mgrOpenRename(cur) {
+    mgrPendingId = Number(cur.id)
+    openMgrPrompt("mgrRename", "Rename", "Rename '" + cur.name + "'.", "name", String(cur.name), false)
+  }
+
+  function mgrRename(text) {
+    var p = Tree.parseName(text)
+    if (p.error) { prompt.fail(p.error); return }
+    var gen = promptGen
+    var id = mgrPendingId
+    prompt.busy = true
+    Backend.json("POST", "/categories/" + id + "/rename", { name: p.name }, function(xhr) {
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j) { settlePrompt(gen, false, xhrMessage(xhr)); return }
+      settlePrompt(gen, true, "")
+      mgrCursorId = id
+      mgrNote(String(j.label || ""))
+      afterChange()
+    })
+  }
+
+  // POST helper for the manager: shows the server's label, then reloads (or runs done).
+  function mgrPost(path, body, done, cursorId) {
+    if (cursorId !== undefined) mgrCursorId = Number(cursorId)
+    Backend.json("POST", path, body, function(xhr) {
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j) { mgrError(xhrMessage(xhr)); return }
+      mgrNote(String(j.label || ""))
+      if (done) done(j)
+      else afterChange()
+    })
+  }
+
+  function mgrOutdent(cur) {
+    var t = Tree.outdentTarget(categoryList, cur.id)
+    if (t === null) { mgrError("already at the top level"); return }
+    mgrPost("/categories/" + cur.id + "/move", { parent_id: t.parent_id, position: t.position }, null, cur.id)
+  }
+
+  function mgrIndent(cur) {
+    var t = Tree.indentTarget(categoryList, cur.id)
+    if (t === null) { mgrError("no previous sibling to indent under"); return }
+    mgrPost("/categories/" + cur.id + "/move", { parent_id: t.parent_id, position: t.position }, null, cur.id)
+  }
+
+  function mgrShift(cur, d) {
+    if (!Tree.canShift(categoryList, cur.id, d)) {
+      mgrError(d < 0 ? "already first among its siblings" : "already last among its siblings")
+      return
+    }
+    mgrPost("/categories/" + cur.id + "/shift", { delta: d }, null, cur.id)
+  }
+
+  // Enter: filter the table by this category and close the manager.
+  function mgrFilter(cur) {
+    closeManager()
+    var f = Object.assign({}, filter)
+    f.category = String(cur.id)
+    f.categoryLabel = String(cur.name)
+    zone = "table"
+    applyFilter(f)
+  }
+
+  // d: asks what happens to the node's own transactions. Subcategories always move up a level.
+  function openDeleteAsk(cur) {
+    var id = Number(cur.id)
+    var kids = Tree.childrenOf(categoryList, id).length
+    pendingCat = { id: id, name: String(cur.name), count: Number(cur.count) || 0, kids: kids, into: null, intoName: "" }
+    pickerCtx = "mgrDelete"
+    picker.title = "Delete '" + pendingCat.name + "'?"
+    picker.hint = Query.fmtCount(pendingCat.count) + " transaction(s) are in it directly"
+                  + (kids ? "; its " + kids + (kids === 1 ? " subcategory moves" : " subcategories move") + " up one level" : "")
+                  + ". Transactions in subcategories stay where they are."
+    picker.emptyText = ""
+    picker.deletable = false
+    picker.entries = [
+      { key: "uncat", label: "Delete; its transactions go to Uncategorized", detail: "" },
+      { key: "move", label: "Delete; its transactions go to a category I pick\u2026", detail: "" },
+      { key: "keep", label: "Keep it", detail: "" }
+    ]
+    picker.currentKey = "keep"
+    picker.show()
+  }
+
+  function openReassign() {
+    pickerCtx = "reassign"
+    picker.title = "Move its transactions to..."
+    picker.hint = "Pick where the " + Query.fmtCount(pendingCat.count) + " transaction(s) of '" + pendingCat.name + "' go."
+    picker.emptyText = "no matching category"
+    picker.deletable = false
+    picker.entries = Tree.pickerEntries(categoryList, {
+      uncategorized: true, uncatCount: uncategorizedCount, exclude: Tree.subtreeIds(categoryList, pendingCat.id) })
+    picker.currentKey = "none"
+    picker.show()
+  }
+
+  function deleteCategory(id, reassignTo) {
+    var gone = Number(id)
+    var nb = Tree.neighbourAfterDelete(categoryList, gone)
+    mgrPost("/categories/" + gone + "/delete", { reassign_to: reassignTo },
+            function() { afterTreeChange(gone, null) }, nb === null ? -1 : nb)
+  }
+
+  // M: pick the target (the node and its subtree are not offered), then confirm.
+  function openMergeTarget(cur) {
+    var id = Number(cur.id)
+    pendingCat = { id: id, name: String(cur.name), count: Number(cur.count) || 0, kids: 0, into: null, intoName: "" }
+    pickerCtx = "mergeTarget"
+    picker.title = "Merge '" + pendingCat.name + "' into..."
+    picker.hint = "Its transactions and subcategories move into the target; same-name subcategories merge."
+    picker.emptyText = "no matching category"
+    picker.deletable = false
+    picker.entries = Tree.pickerEntries(categoryList, { exclude: Tree.subtreeIds(categoryList, id) })
+    picker.currentKey = ""
+    picker.show()
+  }
+
+  function openMergeConfirm() {
+    pickerCtx = "mgrMerge"
+    picker.title = "Merge '" + pendingCat.name + "' into '" + pendingCat.intoName + "'?"
+    picker.hint = Query.fmtCount(pendingCat.count) + " transaction(s) directly in it move; '" + pendingCat.name + "' is deleted."
+    picker.emptyText = ""
+    picker.deletable = false
+    picker.entries = [ { key: "yes", label: "Merge", detail: "" }, { key: "no", label: "Cancel", detail: "" } ]
+    picker.currentKey = "no"
+    picker.show()
+  }
+
+  function mergeCategory(src, dst) {
+    mgrPost("/categories/" + src + "/merge", { into: dst }, function() { afterTreeChange(src, dst) }, dst)
+  }
+
+  // After a delete or merge the table reloads. A filter on the removed category moves to the merge
+  // target, or is cleared after a delete.
+  function afterTreeChange(gone, into) {
+    loadFacets()
+    if (String(filter.category) !== String(gone)) { reloadRows(cursor); return }
+    var f = Object.assign({}, filter)
+    if (into === null) { f.category = ""; f.categoryLabel = "" }
+    else {
+      var t = Tree.rowOf(categoryList, into)
+      f.category = String(into)
+      f.categoryLabel = t ? String(t.name) : ""
+    }
+    zone = "table"
+    applyFilter(f)
   }
 
   // ------------------------------------------------------------------ reload and refresh
@@ -975,6 +1529,9 @@ FocusScope {
     else if (pc.cmd === "delete") deleteViewByName(pc.arg)
     else if (pc.cmd === "clear") { closeSearch(false); clearAll() }
     else if (pc.cmd === "help") { closeSearch(false); help.focusedZone = zone; help.show() }
+    else if (pc.cmd === "undo") { closeSearch(false); history("undo") }
+    else if (pc.cmd === "redo") { closeSearch(false); history("redo") }
+    else if (pc.cmd === "journal") { closeSearch(false); openJournal() }
   }
 
   // The backend's {error} text when it sent one, else the status.
@@ -1175,6 +1732,14 @@ FocusScope {
       case "search.open": openSearch(); break
       case "views.open": openViewsPicker(); break
       case "view.delete": deleteCursorView(); break
+      case "mark.toggle": toggleMarkCursor(); break
+      case "visual.toggle": toggleVisual(); break
+      case "mark.all": markAll(); break
+      case "marks.clear": escapeTable(); break
+      case "categorize": startCategorize(); break
+      case "manager.open": openManager(); break
+      case "undo": history("undo"); break
+      case "redo": history("redo"); break
       case "quit": root.closeRequested(); break
       case "move.down": if (zone === "sidebar") moveSide(1); else moveRow(1); break
       case "move.up": if (zone === "sidebar") moveSide(-1); else moveRow(-1); break
@@ -1218,6 +1783,7 @@ FocusScope {
   }
 
   onCursorChanged: {
+    if (visualOn) refreshMarks()
     if (detailOpen) {
       detailData = null
       detailTimer.restart()
@@ -1225,6 +1791,8 @@ FocusScope {
   }
 
   onSidebarOpenChanged: if (!sidebarOpen && zone === "sidebar") zone = "table"
+  onManagerOpenChanged: if (!managerOpen) Qt.callLater(root.restoreFocus)
+  onCategoryListChanged: mgrSync()
 
   // Keys: only when no overlay is up. The overlays take their own keys while open.
   focus: true
@@ -1307,6 +1875,14 @@ FocusScope {
       Layout.fillWidth: true
       Layout.topMargin: Style.spacing.lg
       spacing: Style.spacing.lg * 2
+      Text {
+        visible: root.markCount > 0
+        text: (root.visualOn ? "VISUAL   " : "") + Query.fmtCount(root.markCount) + " marked"
+        color: Commons.Color.accent
+        font.family: Style.font.family
+        font.pixelSize: Style.font.body
+        font.bold: true
+      }
       Text {
         Layout.fillWidth: true
         Layout.minimumWidth: 0
@@ -1435,7 +2011,7 @@ FocusScope {
       Text {
         Layout.fillWidth: true
         elide: Text.ElideRight
-        text: "j/k move   Tab pane   / search   v views   f filter   s sort   i detail   b sidebar   ? help   r reload   q quit"
+        text: "j/k move   Space mark   V range   C-a all   c categorize   m categories   u undo   Tab pane   / search   f filter   ? help   q quit"
         color: Commons.Color.muted
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
@@ -1478,4 +2054,18 @@ FocusScope {
     anchors.fill: parent
     onClosed: Qt.callLater(root.restoreFocus)
   }
+
+  CategoryManager {
+    id: manager
+    anchors.fill: parent
+    open: root.managerOpen
+    rows: root.categoryList
+    cursorIndex: root.mgrIndex
+    maxDepth: root.maxDepth
+    status: root.mgrStatus
+    statusError: root.mgrStatusError
+    onAct: function(id) { root.mgrAct(id) }
+  }
+
+
 }

@@ -6,6 +6,10 @@ use serde_json::Value;
 /// A migrated synthetic database, loaded into a state that has a cache.
 /// Local categories: txn 1 -> Paint (Home › Improvement › Paint); the rest stay uncategorized.
 fn loaded_state() -> (std::path::PathBuf, std::path::PathBuf, AppState) {
+    loaded_state_with(Settings::default())
+}
+
+fn loaded_state_with(settings: Settings) -> (std::path::PathBuf, std::path::PathBuf, AppState) {
     let (dir, path) = crate::db::tests::setup();
     let db = Db::open(&path, crate::db::tests::PASS).unwrap();
     db.migrate().unwrap();
@@ -14,7 +18,7 @@ fn loaded_state() -> (std::path::PathBuf, std::path::PathBuf, AppState) {
     c.execute_batch("UPDATE transactions SET category_local_id=(SELECT id FROM category WHERE name='Paint') WHERE id=1;").unwrap();
     drop(c);
     let db = Db::open(&path, crate::db::tests::PASS).unwrap();
-    let state = AppState::new(Settings::default(), Ok(db), "test");
+    let state = AppState::new(settings, Ok(db), "test");
     assert_eq!(state.refresh().unwrap(), 4);
     (dir, path, state)
 }
@@ -104,7 +108,12 @@ fn known_paths_with_wrong_method_are_405() {
         ("PUT", "/transactions/1"),
         ("DELETE", "/accounts"),
         ("POST", "/accounts"),
-        ("POST", "/categories"),
+        ("PUT", "/categories"),
+        ("DELETE", "/categories/1/rename"),
+        ("GET", "/undo"),
+        ("GET", "/categories/1/rename"),
+        ("GET", "/transactions/categorize"),
+        ("POST", "/journal"),
         ("POST", "/status"),
         ("POST", "/health"),
         ("GET", "/refresh"),
@@ -704,4 +713,268 @@ fn new_routes_methods_and_paths() {
     // other routes ignore a body
     assert_eq!(send(&s, "GET", "/health", "{\"x\":1}").0, 200);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- category tree, categorize, undo/redo ---------------------------------------------------
+
+fn cat_id(state: &AppState, name: &str) -> i64 {
+    let (_, body) = get(state, "/categories");
+    body["rows"].as_array().unwrap().iter().find(|r| r["name"] == name).unwrap_or_else(|| panic!("no {name}"))["id"]
+        .as_i64()
+        .unwrap()
+}
+
+#[test]
+fn categories_rows_carry_kind_and_sort() {
+    let (dir, _, s) = loaded_state();
+    let (_, body) = get(&s, "/categories");
+    let rows = body["rows"].as_array().unwrap();
+    assert_eq!(rows[0]["kind"], "expense");
+    assert_eq!(rows[0]["sort"], 1); // seeded sort values, not renumbered
+    assert_eq!(rows[3]["name"], "Salary");
+    assert_eq!(rows[3]["kind"], "income");
+    assert_eq!(rows[3]["sort"], 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn post_categories_creates_and_reports_errors() {
+    let (dir, _, s) = loaded_state();
+    let (code, body) = send(&s, "POST", "/categories", r#"{"parent_id":null,"name":"  ApiTop  "}"#);
+    assert_eq!(code, 200, "{body}");
+    assert_eq!((body["ok"].as_bool(), body["label"].as_str()), (Some(true), Some("Create \"ApiTop\"")));
+    assert!(body["id"].is_i64() && body["batch_id"].is_i64());
+    // visible in the very next read
+    let (_, cats) = get(&s, "/categories");
+    assert!(cats["rows"].as_array().unwrap().iter().any(|r| r["name"] == "ApiTop"));
+
+    let top = body["id"].as_i64().unwrap();
+    let kid = send(&s, "POST", "/categories", &format!(r#"{{"parent_id":{top},"name":"ApiKid","kind":"income"}}"#));
+    assert_eq!(kid.0, 200);
+    let (_, cats) = get(&s, "/categories");
+    let k = cats["rows"].as_array().unwrap().iter().find(|r| r["name"] == "ApiKid").unwrap();
+    assert_eq!(k["kind"], "income");
+
+    assert_eq!(send(&s, "POST", "/categories", r#"{"parent_id":null,"name":"apitop"}"#).0, 409, "sibling clash");
+    assert_eq!(send(&s, "POST", "/categories", r#"{"parent_id":null,"name":"   "}"#).0, 400);
+    assert_eq!(send(&s, "POST", "/categories", r#"{"parent_id":null,"name":"x","kind":"savings"}"#).0, 400);
+    assert_eq!(send(&s, "POST", "/categories", r#"{"parent_id":999999,"name":"x"}"#).0, 404);
+    assert_eq!(send(&s, "POST", "/categories", r#"{"parent_id":"1","name":"x"}"#).0, 400);
+    assert_eq!(send(&s, "POST", "/categories", r#"{"name":"x"}"#).0, 400, "parent_id is required");
+    assert_eq!(send(&s, "POST", "/categories", r#"[1]"#).0, 400);
+    assert_eq!(send(&s, "POST", "/categories", "{not json").0, 400);
+    let (code, body) = send(&s, "POST", "/categories", r#"{"parent_id":null,"name":"x"}"#);
+    assert_eq!(code, 200, "{body}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn post_categories_error_envelope_codes() {
+    let (dir, _, s) = loaded_state();
+    let (_, b) = send(&s, "POST", "/categories", r#"{"parent_id":null,"name":"Dup"}"#);
+    assert_eq!(b["ok"], true);
+    let (code, body) = send(&s, "POST", "/categories", r#"{"parent_id":null,"name":"dup"}"#);
+    assert_eq!((code, body["error"].as_str()), (409, Some("conflict")));
+    assert!(body["message"].is_string());
+    let (code, body) = send(&s, "POST", "/categories", r#"{"parent_id":null,"name":""}"#);
+    assert_eq!((code, body["error"].as_str()), (400, Some("invalid")));
+    let (code, body) = send(&s, "POST", "/categories", r#"{"parent_id":77777,"name":"q"}"#);
+    assert_eq!((code, body["error"].as_str()), (404, Some("not_found")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn depth_limit_is_enforced_by_the_api_and_honours_settings() {
+    let (dir, _, s) = loaded_state(); // default max_depth 3
+    let l2 = cat_id(&s, "Improvement");
+    let l3 = cat_id(&s, "Paint");
+    let (code, body) = send(&s, "POST", "/categories", &format!(r#"{{"parent_id":{l3},"name":"TooDeep"}}"#));
+    assert_eq!((code, body["error"].as_str()), (409, Some("limit")), "{body}");
+    assert!(body["message"].as_str().unwrap().contains('3'));
+    assert_eq!(send(&s, "POST", "/categories", &format!(r#"{{"parent_id":{l2},"name":"Fits"}}"#)).0, 200);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let mut st = Settings::default();
+    st.categories.max_depth = 2;
+    let (dir, _, s) = loaded_state_with(st);
+    let home = cat_id(&s, "Home");
+    let (code, body) = send(&s, "POST", "/categories", &format!(r#"{{"parent_id":{home},"name":"Lvl2"}}"#));
+    assert_eq!(code, 200, "{body}");
+    let lvl2 = body["id"].as_i64().unwrap();
+    let (code, body) = send(&s, "POST", "/categories", &format!(r#"{{"parent_id":{lvl2},"name":"Lvl3"}}"#));
+    assert_eq!((code, body["error"].as_str()), (409, Some("limit")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn settings_reports_max_depth() {
+    let s = no_db();
+    let (code, body) = get(&s, "/settings");
+    assert_eq!((code, body["max_depth"].as_u64()), (200, Some(3)));
+    let mut st = Settings::default();
+    st.categories.max_depth = 5;
+    let s = AppState::new(st, Err("db missing".to_string()), "test");
+    assert_eq!(get(&s, "/settings").1["max_depth"].as_u64(), Some(5));
+}
+
+#[test]
+fn category_actions_rename_kind_move_shift_delete_merge() {
+    let (dir, _, s) = loaded_state();
+    let home = cat_id(&s, "Home");
+    let improvement = cat_id(&s, "Improvement");
+    let salary = cat_id(&s, "Salary");
+    let job = cat_id(&s, "Job");
+
+    let (code, body) = send(&s, "POST", &format!("/categories/{home}/rename"), r#"{"name":"House"}"#);
+    assert_eq!((code, body["label"].as_str()), (200, Some("Rename \"Home\" to \"House\"")));
+    assert!(body["batch_id"].is_i64());
+    assert_eq!(send(&s, "POST", &format!("/categories/{home}/rename"), r#"{"name":"house"}"#).0, 200, "case-only rename of itself");
+    assert_eq!(send(&s, "POST", &format!("/categories/{salary}/rename"), r#"{"name":"house"}"#).0, 409);
+
+    let (code, body) = send(&s, "POST", &format!("/categories/{salary}/kind"), r#"{"kind":"transfer"}"#);
+    assert_eq!((code, body["ok"].as_bool()), (200, Some(true)));
+    assert_eq!(send(&s, "POST", &format!("/categories/{salary}/kind"), r#"{"kind":"nope"}"#).0, 400);
+
+    // move Job to the top level, then shift it up and down
+    let (code, _) = send(&s, "POST", &format!("/categories/{job}/move"), r#"{"parent_id":null,"position":0}"#);
+    assert_eq!(code, 200);
+    let (_, cats) = get(&s, "/categories");
+    assert_eq!(cats["rows"][0]["name"], "Job");
+    let (code, body) = send(&s, "POST", &format!("/categories/{job}/shift"), r#"{"delta":1}"#);
+    assert_eq!((code, body["ok"].as_bool()), (200, Some(true)));
+    let (_, cats) = get(&s, "/categories");
+    assert_ne!(cats["rows"][0]["name"], "Job");
+    assert_eq!(send(&s, "POST", &format!("/categories/{job}/shift"), r#"{"delta":2}"#).0, 400);
+    assert_eq!(send(&s, "POST", &format!("/categories/{job}/move"), &format!(r#"{{"parent_id":{job}}}"#)).0, 409, "under itself");
+
+    // merge Improvement into Salary (different subtrees, no clash), then delete the now-empty Job
+    let (code, body) = send(&s, "POST", &format!("/categories/{improvement}/merge"), &format!(r#"{{"into":{salary}}}"#));
+    assert_eq!(code, 200, "{body}");
+    assert!(body["label"].as_str().unwrap().starts_with("Merge \"Improvement\" into"));
+    assert_eq!(send(&s, "POST", &format!("/categories/{salary}/merge"), &format!(r#"{{"into":{salary}}}"#)).0, 409);
+
+    let (code, body) = send(&s, "POST", &format!("/categories/{job}/delete"), r#"{"reassign_to":null}"#);
+    assert_eq!((code, body["ok"].as_bool()), (200, Some(true)), "{body}");
+    let (_, cats) = get(&s, "/categories");
+    assert!(!cats["rows"].as_array().unwrap().iter().any(|r| r["name"] == "Job"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn category_action_errors_and_routing() {
+    let (dir, _, s) = loaded_state();
+    let paint = cat_id(&s, "Paint");
+    assert_eq!(send(&s, "POST", "/categories/999999/rename", r#"{"name":"x"}"#).0, 404);
+    assert_eq!(send(&s, "POST", "/categories/abc/rename", r#"{"name":"x"}"#).0, 400);
+    assert_eq!(send(&s, "POST", &format!("/categories/{paint}/rename"), r#"{"name":""}"#).0, 400);
+    assert_eq!(send(&s, "POST", &format!("/categories/{paint}/rename"), r#"{}"#).0, 400);
+    assert_eq!(send(&s, "POST", &format!("/categories/{paint}/delete"), r#"{"reassign_to":999999}"#).0, 404);
+    assert_eq!(send(&s, "POST", &format!("/categories/{paint}/merge"), &format!(r#"{{"into":{paint}}}"#)).0, 409);
+    assert_eq!(send(&s, "POST", &format!("/categories/{paint}/shift"), r#"{"delta":"1"}"#).0, 400);
+    // unknown action and wrong method
+    assert_eq!(send(&s, "POST", &format!("/categories/{paint}/bogus"), "{}").0, 404);
+    assert_eq!(get(&s, &format!("/categories/{paint}/rename")).0, 405);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn categorize_route_counts_and_validates() {
+    let (dir, _, s) = loaded_state();
+    let job = cat_id(&s, "Job");
+    let paint = cat_id(&s, "Paint");
+    let (code, body) = send(&s, "POST", "/transactions/categorize", &format!(r#"{{"ids":[1,2,99999],"category_id":{job}}}"#));
+    assert_eq!(code, 200, "{body}");
+    assert_eq!((body["changed"].as_u64(), body["skipped"].as_u64()), (Some(2), Some(1)));
+    assert_eq!(body["label"], "Categorize 2 transactions as Salary › Job");
+    assert!(body["batch_id"].is_i64());
+    // already equal counts as skipped; uncategorize with null
+    let (_, body) = send(&s, "POST", "/transactions/categorize", &format!(r#"{{"ids":[2],"category_id":{job}}}"#));
+    assert_eq!((body["changed"].as_u64(), body["skipped"].as_u64(), body["batch_id"].is_null()), (Some(0), Some(1), true));
+    let (_, body) = send(&s, "POST", "/transactions/categorize", r#"{"ids":[2],"category_id":null}"#);
+    assert_eq!(body["changed"], 1);
+    assert_eq!(send(&s, "POST", "/transactions/categorize", &format!(r#"{{"ids":[1],"category_id":{paint}}}"#)).0, 200);
+
+    assert_eq!(send(&s, "POST", "/transactions/categorize", r#"{"ids":"1","category_id":null}"#).0, 400);
+    assert_eq!(send(&s, "POST", "/transactions/categorize", r#"{"ids":[1,"x"],"category_id":null}"#).0, 400);
+    assert_eq!(send(&s, "POST", "/transactions/categorize", r#"{"ids":[],"category_id":null}"#).0, 400);
+    assert_eq!(send(&s, "POST", "/transactions/categorize", r#"{"ids":[1],"category_id":424242}"#).0, 404);
+    let many: Vec<String> = (1..=5001).map(|i| i.to_string()).collect();
+    assert_eq!(send(&s, "POST", "/transactions/categorize", &format!(r#"{{"ids":[{}],"category_id":null}}"#, many.join(","))).0, 400);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn undo_redo_and_journal_routes() {
+    let (dir, _, s) = loaded_state();
+    let (code, body) = send(&s, "POST", "/undo", "");
+    assert_eq!(code, 409, "{body}");
+    assert_eq!(body["error"], "nothing_to_undo");
+    assert_eq!(send(&s, "POST", "/redo", "").1["error"], "nothing_to_redo");
+
+    let (_, made) = send(&s, "POST", "/categories", r#"{"parent_id":null,"name":"UndoMe"}"#);
+    let (_, j) = get_q(&s, "/journal", "");
+    assert_eq!(j["can_undo"], true);
+    assert_eq!(j["next_undo_label"], "Create \"UndoMe\"");
+    assert_eq!(j["rows"].as_array().unwrap().len(), 1, "default limit 20, one batch so far");
+    assert_eq!(j["rows"][0]["kind"], "category");
+    assert_eq!((j["rows"][0]["undone"].as_bool(), j["rows"][0]["superseded"].as_bool()), (Some(false), Some(false)));
+
+    let (code, body) = send(&s, "POST", "/undo", "");
+    assert_eq!((code, body["ok"].as_bool(), body["label"].as_str()), (200, Some(true), Some("Create \"UndoMe\"")));
+    assert!(body["batch_id"].is_i64());
+    assert!(!get(&s, "/categories").1["rows"].as_array().unwrap().iter().any(|r| r["name"] == "UndoMe"));
+    let (_, j) = get_q(&s, "/journal", "");
+    assert_eq!((j["can_redo"].as_bool(), j["next_redo_label"].as_str()), (Some(true), Some("Create \"UndoMe\"")));
+
+    let (code, body) = send(&s, "POST", "/redo", "");
+    assert_eq!((code, body["ok"].as_bool()), (200, Some(true)));
+    assert!(get(&s, "/categories").1["rows"].as_array().unwrap().iter().any(|r| r["name"] == "UndoMe"));
+    let _ = made;
+
+    // limits on the journal query
+    assert_eq!(get_q(&s, "/journal", "limit=1").0, 200);
+    assert_eq!(get_q(&s, "/journal", "limit=100").0, 200);
+    for q in ["limit=0", "limit=101", "limit=abc", "limit=", "limit=-1", "limit=1&limit=2", "other=1", "limit=2&x=1"] {
+        let (code, body) = get_q(&s, "/journal", q);
+        assert_eq!((code, body["error"].as_str()), (400, Some("invalid")), "{q}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn undo_reports_conflict_when_data_changed_underneath() {
+    let (dir, path, s) = loaded_state();
+    let (_, made) = send(&s, "POST", "/categories", r#"{"parent_id":null,"name":"Tampered"}"#);
+    let id = made["id"].as_i64().unwrap();
+    raw(&path)
+        .execute("UPDATE category SET name='Changed Elsewhere' WHERE id=?1", params![id])
+        .unwrap();
+    let (code, body) = send(&s, "POST", "/undo", "");
+    assert_eq!((code, body["error"].as_str()), (409, Some("conflict")), "{body}");
+    assert!(body["message"].is_string());
+    let (_, j) = get_q(&s, "/journal", "");
+    assert_eq!(j["can_undo"], true, "the refused batch stays undoable state-wise");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn write_routes_without_a_database_are_503() {
+    let s = no_db();
+    for (m, p, b) in [
+        ("POST", "/categories", r#"{"parent_id":null,"name":"x"}"#),
+        ("POST", "/categories/1/rename", r#"{"name":"x"}"#),
+        ("POST", "/categories/1/kind", r#"{"kind":"income"}"#),
+        ("POST", "/categories/1/move", r#"{"parent_id":null}"#),
+        ("POST", "/categories/1/shift", r#"{"delta":1}"#),
+        ("POST", "/categories/1/delete", r#"{"reassign_to":null}"#),
+        ("POST", "/categories/1/merge", r#"{"into":2}"#),
+        ("POST", "/transactions/categorize", r#"{"ids":[1],"category_id":null}"#),
+        ("POST", "/undo", ""),
+        ("POST", "/redo", ""),
+    ] {
+        let (code, body) = send(&s, m, p, b);
+        assert_eq!(code, 503, "{m} {p}");
+        assert!(body["error"].is_string(), "{m} {p}");
+    }
+    assert_eq!(get(&s, "/journal").0, 503);
 }

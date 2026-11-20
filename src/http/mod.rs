@@ -319,7 +319,7 @@ mod tests {
             format!("{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", method, path, port)
         };
         // without a token every new route is refused by the guard, whatever the method
-        for (m, p) in [("GET", "/transactions"), ("GET", "/transactions/1"), ("GET", "/accounts"), ("GET", "/categories"), ("POST", "/refresh"), ("GET", "/refresh")] {
+        for (m, p) in [("GET", "/transactions"), ("GET", "/transactions/1"), ("GET", "/accounts"), ("GET", "/categories"), ("POST", "/refresh"), ("GET", "/refresh"), ("POST", "/categories"), ("POST", "/categories/1/rename"), ("POST", "/categories/1/kind"), ("POST", "/categories/1/move"), ("POST", "/categories/1/shift"), ("POST", "/categories/1/delete"), ("POST", "/categories/1/merge"), ("POST", "/transactions/categorize"), ("POST", "/undo"), ("POST", "/redo"), ("GET", "/journal")] {
             assert_eq!(raw(port, &no_token(m, p)).status, 401, "{} {}", m, p);
         }
         // with a token they reach the router; this state has no database, so data routes say 503

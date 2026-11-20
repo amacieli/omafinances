@@ -1,5 +1,7 @@
 //! Encrypted (SQLCipher) database access. One `Mutex<Connection>`: key derivation is slow, so we
 //! open once. Journal mode is left alone (the file lives on NFS; no WAL).
+pub mod categories;
+pub mod journal;
 pub mod migrations;
 pub mod views;
 

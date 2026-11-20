@@ -8,7 +8,10 @@ use rusqlite::{params, Connection, Transaction};
 pub type MigrationFn = fn(&Transaction) -> Result<()>;
 
 /// (target version, description, apply fn). Append only.
-pub const MIGRATIONS: &[(i64, &str, MigrationFn)] = &[(1, "category tree, journal, rules, views", v1)];
+pub const MIGRATIONS: &[(i64, &str, MigrationFn)] = &[
+    (1, "category tree, journal, rules, views", v1),
+    (2, "undo/redo: superseded flag on change_batch", v2),
+];
 
 pub fn latest_version() -> i64 {
     MIGRATIONS.last().map(|m| m.0).unwrap_or(0)
@@ -86,6 +89,15 @@ fn v1(tx: &Transaction) -> Result<()> {
     }
     tx.execute_batch("CREATE INDEX IF NOT EXISTS idx_transactions_category_local ON transactions(category_local_id);")?;
     seed_categories(tx).context("seeding category tree from legacy tables")?;
+    Ok(())
+}
+
+/// Redo support: a batch created after an undo supersedes the undone batches, so they can no longer be redone.
+fn v2(tx: &Transaction) -> Result<()> {
+    if !column_exists(tx, "change_batch", "superseded")? {
+        tx.execute_batch("ALTER TABLE change_batch ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    tx.execute_batch("CREATE INDEX IF NOT EXISTS idx_change_batch_undo ON change_batch(undone_at, superseded);")?;
     Ok(())
 }
 

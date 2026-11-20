@@ -1,8 +1,9 @@
 //! The UI's JSON API: a pure router, so it can be tested without sockets.
 //!
-//! Paths are matched exactly (no prefix or substring matching), except `/transactions/<id>` and `/views/<id>`.
-//! Unknown paths are 404; a known path with the wrong method is 405 (writes: `POST /refresh`, `POST /views`,
-//! `DELETE /views/<id>`, `POST /history`).
+//! Paths are matched exactly (no prefix or substring matching), except `/transactions/<id>`, `/views/<id>`
+//! and `/categories/<id>/<action>`. Unknown paths are 404; a known path with the wrong method is 405
+//! (writes: `POST /refresh`, `POST /views`, `DELETE /views/<id>`, `POST /history`, and the category, categorize
+//! and undo/redo routes in `edit.rs`).
 //! Data routes read the in-memory `Cache`: 503 when the database is unavailable or the cache has not
 //! been loaded. Bodies are `{"error": "..."}` on failure. Errors never carry payee, amount or token data.
 
@@ -17,7 +18,11 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock, RwLockReadGuard};
 
+mod edit;
 mod slash;
+
+/// A status code and its JSON body.
+pub(crate) type Resp = (u16, Value);
 
 /// Everything the routes read. Built once at startup; shared by the workers.
 pub struct AppState {
@@ -82,6 +87,11 @@ pub fn route_name(path: &str) -> &'static str {
         Route::Transaction(_) => "transaction",
         Route::Accounts => "accounts",
         Route::Categories => "categories",
+        Route::CategoryAction(_, _) => "category_action",
+        Route::Categorize => "categorize",
+        Route::Undo => "undo",
+        Route::Redo => "redo",
+        Route::Journal => "journal",
         Route::Refresh => "refresh",
         Route::SearchParse => "search_parse",
         Route::Views => "views",
@@ -99,6 +109,11 @@ enum Route<'a> {
     Transaction(&'a str),
     Accounts,
     Categories,
+    CategoryAction(&'a str, &'a str),
+    Categorize,
+    Undo,
+    Redo,
+    Journal,
     Refresh,
     SearchParse,
     Views,
@@ -115,6 +130,10 @@ fn route(path: &str) -> Route<'_> {
         "/transactions" => Route::Transactions,
         "/accounts" => Route::Accounts,
         "/categories" => Route::Categories,
+        "/transactions/categorize" => Route::Categorize,
+        "/undo" => Route::Undo,
+        "/redo" => Route::Redo,
+        "/journal" => Route::Journal,
         "/refresh" => Route::Refresh,
         "/search/parse" => Route::SearchParse,
         "/views" => Route::Views,
@@ -123,6 +142,13 @@ fn route(path: &str) -> Route<'_> {
             if let Some(rest) = path.strip_prefix("/transactions/") {
                 if !rest.is_empty() && !rest.contains('/') {
                     return Route::Transaction(rest);
+                }
+            } else if let Some(rest) = path.strip_prefix("/categories/") {
+                if let Some((id, action)) = rest.split_once('/') {
+                    let known = matches!(action, "rename" | "kind" | "move" | "shift" | "delete" | "merge");
+                    if !id.is_empty() && !id.contains('/') && known {
+                        return Route::CategoryAction(id, action);
+                    }
                 }
             } else if let Some(rest) = path.strip_prefix("/views/") {
                 if !rest.is_empty() && !rest.contains('/') {
@@ -158,7 +184,11 @@ pub fn handle_body(state: &AppState, method: &str, path: &str, query: &str, body
     let r = route(path);
     let allowed: &[&str] = match r {
         Route::Unknown => return error(404, "not found"),
-        Route::Refresh => &["POST"],
+        Route::Refresh | Route::CategoryAction(_, _) | Route::Categorize | Route::Undo | Route::Redo => {
+            &["POST"]
+        }
+        Route::Categories => &["GET", "POST"],
+        Route::Journal => &["GET"],
         Route::Views | Route::History => &["GET", "POST"],
         Route::View(_) => &["DELETE"],
         _ => &["GET"],
@@ -169,11 +199,20 @@ pub fn handle_body(state: &AppState, method: &str, path: &str, query: &str, body
     match r {
         Route::Health => (200, json!({ "ok": true, "version": state.version })),
         Route::Status => (200, status(state)),
-        Route::Settings => (200, json!({ "scale_factor": state.settings.ui.scale_factor })),
+        Route::Settings => (
+            200,
+            json!({ "scale_factor": state.settings.ui.scale_factor, "max_depth": state.settings.categories.max_depth.clamp(1, 6) }),
+        ),
         Route::Transactions => transactions(state, query),
         Route::Transaction(id) => transaction(state, id),
         Route::Accounts => accounts(state),
+        Route::Categories if method == "POST" => edit::category_create(state, body),
         Route::Categories => categories(state),
+        Route::CategoryAction(id, action) => edit::category_action(state, id, action, body),
+        Route::Categorize => edit::categorize(state, body),
+        Route::Undo => edit::undo(state),
+        Route::Redo => edit::redo(state),
+        Route::Journal => edit::journal(state, query),
         Route::Refresh => refresh(state),
         Route::SearchParse => slash::search_parse(state, query),
         Route::Views if method == "POST" => slash::view_save(state, body),
@@ -350,6 +389,7 @@ fn category_json(c: &CatNode) -> Value {
         "parent_id": c.parent_id,
         "name": c.name,
         "kind": c.kind,
+        "sort": c.sort,
         "depth": c.depth,
         "count": c.count,
         "count_subtree": c.count_subtree,

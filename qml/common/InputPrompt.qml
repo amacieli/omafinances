@@ -21,6 +21,10 @@ Item {
   signal cancelled()
 
   property string error: ""
+  // closeOnSubmit false: the prompt stays open while the owner talks to the backend. It then calls
+  // close() on success or fail(msg) to show the server's message and accept another try.
+  property bool closeOnSubmit: true
+  property bool busy: false
 
   visible: open
   z: 21
@@ -28,21 +32,35 @@ Item {
   function show(initial) {
     input.text = initial || ""
     error = ""
+    busy = false
     open = true
     input.forceActiveFocus()
     input.cursorPosition = input.text.length
   }
 
   function submit() {
+    if (busy) return
     var msg = validator(input.text)
     if (msg !== "") { error = msg; return }
-    open = false
+    if (closeOnSubmit) open = false
     submitted(input.text)
+  }
+
+  function close() {
+    if (!open) return
+    open = false
+    busy = false
+  }
+
+  function fail(msg) {
+    error = msg
+    busy = false
   }
 
   function cancel() {
     if (!open) return
     open = false
+    busy = false
     cancelled()
   }
 

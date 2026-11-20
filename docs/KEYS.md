@@ -25,6 +25,9 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `x` | Clear all filters |
 | `X` | Clear the newest filter chip |
 | `r` | Refresh from Lunch Money, then reload |
+| `m` | Category manager (full pane; see below) |
+| `u` | Undo the last change (categorizing, category edits); toast says what was undone |
+| `Ctrl-r` | Redo the change that was undone |
 | `/` | Slash search bar (type terms; `:` starts a command; again: reopens it with the active query) |
 | `v` | Saved views (Enter applies, `d` deletes) |
 | `q` | Quit |
@@ -42,7 +45,30 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `PgDown` | Page down (a full screen) |
 | `PgUp` | Page up (a full screen) |
 | `Home` / `End` | First / last row (same as `g` / `G`) |
-| `Esc` | Quit (from the table; elsewhere `Esc` returns to the table) |
+| `Space` | Mark or unmark the cursor row, then move down |
+| `V` | Start a visual range from the cursor (`j`/`k` extend it); `Esc` leaves visual mode and keeps the marks |
+| `Ctrl-a` | Mark every row matching the filters (loads all matching pages first, capped at 5000) |
+| `c` | Categorize: the marked rows, else the cursor row. `Uncategorized` clears; `+ New category…` takes a path like `Home/Pets/Dogs` |
+| `Esc` | Clear marks first; quits only when nothing is marked. Elsewhere `Esc` returns to the table |
+
+### Category manager (`m`; overlay, keys work inside it)
+
+| Key | Action |
+| --- | --- |
+| `j` / `Down`, `k` / `Up` | Move the cursor |
+| `a` | Add a child of the cursor node |
+| `A` | Add a sibling after the cursor node |
+| `r` | Rename (prompt prefilled) |
+| `H` | Outdent: move under the parent's parent, right after the parent |
+| `L` | Indent: become the last child of the previous sibling |
+| `J` / `K` | Reorder among siblings |
+| `e` | Cycle kind: expense, income, transfer |
+| `d` | Delete: confirm; transactions go to the chosen category (default Uncategorized); children move up |
+| `M` | Merge into…: picker that excludes the node and its descendants, then confirm |
+| `Enter` | Filter the table by this category and close |
+| `Esc` | Close |
+
+The header shows `max depth N`; a server refusal (e.g. too deep) shows in the status line.
 
 ### Sidebar (focus: sidebar, Tab)
 
@@ -128,6 +154,14 @@ Examples:
 - `a:chase,amex d:ytd n:reimburse` — two accounts, year to date, notes mention "reimburse"
 
 Commands (the bar text starts with `:`): `:save <name>` saves the active query and sort as a view (empty bar: the active query), `:view <name>` applies a view (fuzzy name), `:views` opens the saved views list, `:delete <name>`, `:clear` clears all filters, `:help` opens this help.
+
+### Journal and commands (search bar, `/` then `:`)
+
+| Command | Action |
+| --- | --- |
+| `:undo` | Same as `u` |
+| `:redo` | Same as `Ctrl-r` |
+| `:journal` | Read-only list of the last 20 changes, newest first; undone ones are marked |
 
 ### This help
 

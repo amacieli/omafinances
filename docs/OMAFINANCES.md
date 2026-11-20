@@ -110,6 +110,25 @@ Routes:
 
 Amounts follow the Lunch Money convention: positive is money out, negative is money in.
 
+### Categories, categorize, undo (phase 3)
+
+All mutations are POST with a JSON body, run in one SQLite transaction, write one `change_batch` (journal) and refresh the in-memory cache. Errors are `{"error":code,"message":text}` with 400 invalid, 404 unknown id, 409 clash/limit/conflict.
+
+| Route | Body | Notes |
+| --- | --- | --- |
+| `POST /categories` | `{parent_id, name, kind?}` | depth limit `[categories] max_depth` (default 3) in settings.toml |
+| `POST /categories/<id>/rename` | `{name}` | siblings unique, case-insensitive |
+| `POST /categories/<id>/kind` | `{kind}` | expense / income / transfer |
+| `POST /categories/<id>/move` | `{parent_id, position?}` | refuses cycles and subtree depth overflow |
+| `POST /categories/<id>/shift` | `{delta:-1\|1}` | swap with neighbouring sibling |
+| `POST /categories/<id>/delete` | `{reassign_to}` | its transactions move (or become uncategorized); children move up |
+| `POST /categories/<id>/merge` | `{into}` | same-name children merge recursively |
+| `POST /transactions/categorize` | `{ids, category_id}` | max 5000 ids; `null` uncategorizes |
+| `POST /undo`, `POST /redo` | none | 409 `nothing_to_undo` / `conflict` (data changed underneath) |
+| `GET /journal?limit=` | | `{rows, can_undo, can_redo, next_undo_label, next_redo_label}` |
+
+A new change supersedes (makes un-redoable) every undone batch. Saved-view writes are journaled too. `GET /settings` includes `max_depth`.
+
 ## Build, run, test
 
 ```sh

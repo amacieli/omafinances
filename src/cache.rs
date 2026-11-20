@@ -64,6 +64,8 @@ pub struct CatNode {
     pub parent_id: Option<i64>,
     pub name: String,
     pub kind: String,
+    /// Stored sibling order (`category.sort`); the display order is parent, then siblings by sort and name.
+    pub sort: i64,
     pub depth: u32,
     pub path: String,
     /// Number of nodes in this subtree, self included. Descendants are `pos+1 .. pos+size`.
@@ -304,6 +306,7 @@ fn build_tree(raw: &[RawCategory]) -> Vec<CatNode> {
             parent_id: r.parent_id,
             name: r.name.clone(),
             kind: r.kind.clone(),
+            sort: r.sort,
             depth,
             path: path.clone(),
             size: 0,

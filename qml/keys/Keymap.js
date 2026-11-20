@@ -19,10 +19,11 @@ var SCOPE_TITLES = {
   search: "Slash search bar (focus: the / bar; typing is a search)",
   picker: "Pickers: filter menu, sort, sub-pickers",
   prompt: "Typed input (amount, dates, text)",
+  manager: "Category manager (m; keys work inside the overlay)",
   help: "This help"
 }
 
-var SCOPE_ORDER = ["global", "table", "sidebar", "detail", "search", "picker", "prompt", "help"]
+var SCOPE_ORDER = ["global", "table", "manager", "sidebar", "detail", "search", "picker", "prompt", "help"]
 
 var BINDINGS = [
   // ---- anywhere
@@ -45,6 +46,9 @@ var BINDINGS = [
   { id: "reload", scope: "global", keys: ["r"], label: "Refresh from Lunch Money, then reload" },
   { id: "search.open", scope: "global", keys: ["/"], label: "Slash search bar: type terms, : starts a command (again: reopens it with the active query)" },
   { id: "views.open", scope: "global", keys: ["v"], label: "Saved views (Enter applies, d deletes)" },
+  { id: "manager.open", scope: "global", keys: ["m"], label: "Category manager: tree, add, rename, move, delete, merge" },
+  { id: "undo", scope: "global", keys: ["u"], label: "Undo the last change (categorizing, category edits)" },
+  { id: "redo", scope: "global", keys: ["C-r"], label: "Redo" },
   { id: "quit", scope: "global", keys: ["q"], label: "Quit" },
 
   // ---- transaction table
@@ -56,7 +60,27 @@ var BINDINGS = [
   { id: "page.fulldown", scope: "table", keys: ["PgDown"], label: "Page down (a full screen)" },
   { id: "page.up", scope: "table", keys: ["C-u"], label: "Half page up" },
   { id: "page.fullup", scope: "table", keys: ["PgUp"], label: "Page up (a full screen)" },
-  { id: "quit", scope: "table", keys: ["Esc"], label: "Quit (from the table; elsewhere Esc returns to the table)" },
+  { id: "mark.toggle", scope: "table", keys: ["Space"], label: "Mark or unmark this row, then move down" },
+  { id: "visual.toggle", scope: "table", keys: ["V"], label: "Visual range: start here; j/k extend it; V again ends it, keeping the marks" },
+  { id: "mark.all", scope: "table", keys: ["C-a"], label: "Mark every row that matches the filters (loads all pages; cap 5000)" },
+  { id: "marks.clear", scope: "table", keys: ["Esc"], label: "Esc: end visual mode (keeps marks); then clear the marks; with nothing marked, quit" },
+  { id: "categorize", scope: "table", keys: ["c"], label: "Categorize the marked rows, or this row (category picker)" },
+
+  // ---- category manager (full-pane overlay; AppShell runs the actions)
+  { id: "mgr.down", scope: "manager", keys: ["j", "Down"], label: "Move down the tree" },
+  { id: "mgr.up", scope: "manager", keys: ["k", "Up"], label: "Move up the tree" },
+  { id: "mgr.add", scope: "manager", keys: ["a"], label: "Add a child under the cursor (empty tree: add a top-level category)" },
+  { id: "mgr.addSibling", scope: "manager", keys: ["A"], label: "Add a sibling after the cursor" },
+  { id: "mgr.rename", scope: "manager", keys: ["r"], label: "Rename (prefilled)" },
+  { id: "mgr.outdent", scope: "manager", keys: ["H"], label: "Outdent: move under the parent's parent, right after the parent" },
+  { id: "mgr.indent", scope: "manager", keys: ["L"], label: "Indent: become the last child of the previous sibling" },
+  { id: "mgr.shiftUp", scope: "manager", keys: ["K"], label: "Move up among siblings" },
+  { id: "mgr.shiftDown", scope: "manager", keys: ["J"], label: "Move down among siblings" },
+  { id: "mgr.kind", scope: "manager", keys: ["e"], label: "Cycle kind: expense, income, transfer" },
+  { id: "mgr.delete", scope: "manager", keys: ["d"], label: "Delete (asks; its transactions go to Uncategorized or a category you pick)" },
+  { id: "mgr.merge", scope: "manager", keys: ["M"], label: "Merge into... (asks for the target and confirms)" },
+  { id: "mgr.filter", scope: "manager", keys: ["Enter"], label: "Filter the transactions by this category and close" },
+  { id: "mgr.close", scope: "manager", keys: ["Esc"], label: "Close the manager" },
 
   // ---- sidebar
   { id: "move.down", scope: "sidebar", keys: ["j", "Down"], label: "Move down (headers are skipped)" },

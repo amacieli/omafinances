@@ -117,17 +117,29 @@ Item {
       required property string category
       required property bool pending
       required property bool recurring
+      required property bool marked
 
       readonly property bool selected: index === root.currentIndex && root.focusedPane
       readonly property bool current: index === root.currentIndex
       width: list.width
       height: root.rowHeight
       color: current ? Style.selectedAccentFill
+           : marked ? Qt.alpha(Commons.Color.accent, 0.14)
            : (index % 2 === 1 ? Qt.alpha(Commons.Color.menu.text, 0.04) : "transparent")
 
       MouseArea {
         anchors.fill: parent
         onClicked: root.rowClicked(rowItem.index)
+      }
+
+      // Marked rows carry an accent bar at the left edge (the tint alone is easy to miss).
+      Rectangle {
+        visible: rowItem.marked
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        width: Style.space(3)
+        color: Commons.Color.accent
       }
 
       RowLayout {
