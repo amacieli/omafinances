@@ -615,7 +615,13 @@ FocusScope {
   // text field after onOpenChanged runs, which would otherwise take focus away again. Skipped if
   // another overlay reopened in the meantime (a sub-picker, for example).
   function restoreFocus() {
-    if (!overlayOpen) root.forceActiveFocus()
+    if (overlayOpen) return
+    // An overlay's text field keeps the window's active focus after the overlay is hidden, so keys
+    // would go to an invisible field. Drop it explicitly, then take focus back.
+    var a = root.Window.activeFocusItem
+    if (a && a !== root) a.focus = false
+    picker.focus = false; prompt.focus = false; help.focus = false
+    root.forceActiveFocus()
   }
 
   // ------------------------------------------------------------------ detail

@@ -150,6 +150,7 @@ Item {
         RowLayout {
           Layout.fillWidth: true
           Layout.minimumWidth: 0
+          clip: true   // a long payee plus the pending tag must not run into the amount column
           spacing: Style.spacing.sm
           Text {
             visible: rowItem.recurring
