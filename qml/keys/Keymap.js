@@ -35,6 +35,8 @@ var BINDINGS = [
   { id: "sidebar.toggle", scope: "global", keys: ["b"], label: "Show or hide the sidebar" },
   { id: "focus.next", scope: "global", keys: ["Tab"], label: "Focus next pane: sidebar, table, detail" },
   { id: "focus.prev", scope: "global", keys: ["S-Tab"], label: "Focus previous pane" },
+  { id: "pane.left", scope: "global", keys: ["Left"], label: "Move focus to the pane on the left (sidebar; opens it if hidden)" },
+  { id: "pane.right", scope: "global", keys: ["Right"], label: "Move focus to the pane on the right (table, then detail)" },
   { id: "detail.toggle", scope: "global", keys: ["i", "Enter"], label: "Show or hide the detail pane" },
   { id: "filter.clearAll", scope: "global", keys: ["x"], label: "Clear all filters" },
   { id: "filter.clearLast", scope: "global", keys: ["X"], label: "Clear the newest filter chip" },

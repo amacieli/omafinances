@@ -685,6 +685,16 @@ FocusScope {
     return z
   }
 
+  // Left/Right arrows: move between neighbouring panes without wrapping. Left from the table
+  // opens a hidden sidebar so there is always something to the left.
+  function paneStep(dir) {
+    var z = zones()
+    var i = z.indexOf(zone)
+    if (dir < 0 && zone === "table" && !sidebarOpen) { sidebarOpen = true; zone = "sidebar"; return }
+    var n = i + dir
+    if (n >= 0 && n < z.length) zone = z[n]
+  }
+
   function cycleFocus(dir) {
     var z = zones()
     var i = z.indexOf(zone)
@@ -714,6 +724,8 @@ FocusScope {
         break
       case "focus.next": cycleFocus(1); break
       case "focus.prev": cycleFocus(-1); break
+      case "pane.left": paneStep(-1); break
+      case "pane.right": paneStep(1); break
       case "focus.table": zone = "table"; break
       case "detail.toggle": toggleDetail(); break
       case "detail.close": detailOpen = false; zone = "table"; break

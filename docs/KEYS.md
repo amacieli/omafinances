@@ -19,6 +19,8 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `b` | Show or hide the sidebar |
 | `Tab` | Focus next pane: sidebar, table, detail |
 | `Shift-Tab` | Focus previous pane |
+| `Left` | Move focus to the pane on the left (sidebar; opens it if hidden) |
+| `Right` | Move focus to the pane on the right (table, then detail) |
 | `i` / `Enter` | Show or hide the detail pane |
 | `x` | Clear all filters |
 | `X` | Clear the newest filter chip |
