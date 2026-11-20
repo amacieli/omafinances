@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 pub const APP_DIR: &str = "omafinances";
 pub const DEFAULT_PORT: u16 = 27183;
 /// The existing Lunch Money mirror. Changeable in settings.toml.
-pub const DEFAULT_DB: &str = "/mnt/ai/projects/finances-tracker/finances.db";
+pub const DEFAULT_DB: &str = "/mnt/ai/projects/omafinances/finances.db";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]

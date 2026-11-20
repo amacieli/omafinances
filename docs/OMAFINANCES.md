@@ -11,7 +11,7 @@ maintained by `sync.py`. Rust backend + Quickshell (QML) UI, for Omarchy/Hyprlan
   header.
 - **UI** (`qml/`, run by Quickshell with `QML_DIR`): talks only to the backend, never to the database.
 - **Database**: SQLCipher file at `database.path` in `settings.toml` (default
-  `/mnt/ai/projects/finances-tracker/finances.db`). The passphrase is not in any file the app writes:
+  `/mnt/ai/projects/omafinances/finances.db`). The passphrase is not in any file the app writes:
   it lives in the Secret Service keyring (service `omafinances`, user `db-passphrase`).
 - **Migrations**: the backend makes a backup of the database before any schema migration.
 - **Shared database**: `sync.py` writes the same file. The app must not add FTS tables or triggers

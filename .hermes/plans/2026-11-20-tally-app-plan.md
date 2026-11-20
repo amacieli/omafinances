@@ -3,7 +3,7 @@
 > Working name "Tally" (binary `tally`); rename freely. Plan only — no code written.
 
 **Goal:** A local-first, beautiful, keyboard-driven terminal app over the existing encrypted Lunch Money mirror
-(`/mnt/ai/projects/finances-tracker/finances.db`) with slash-search, fast filter/sort/categorize, a
+(`/mnt/ai/projects/omafinances/finances.db`) with slash-search, fast filter/sort/categorize, a
 preview-before-apply bulk categorizer, scheduled emailed reports, and an optional MCP server that exists only while the app runs.
 
 **Principle:** intelligence lives in the app (deterministic + statistical, no LLM needed). The MCP server is a convenience door for agents, never a dependency.
@@ -40,7 +40,7 @@ Reasons: arbitrary re-parenting/merge is a single UPDATE, depth is a policy not 
 
 ## 2. Architecture
 
-Cargo workspace at `/mnt/ai/projects/finances-tracker/tally/` (git repo from day one; no feature branches, same convention as omalook; push only when asked).
+Cargo workspace at `/mnt/ai/projects/omafinances/tally/` (git repo from day one; no feature branches, same convention as omalook; push only when asked).
 
 ```
 tally-core    db (rusqlite + bundled-sqlcipher), models, migrations, change journal (undo), query language,
@@ -153,4 +153,4 @@ Suggested order is as listed; 5 can overlap 4. Chunks 0–4 deliver the core of 
 3. Confirm the 3-level starting depth and the proposed re-parenting (Loans, Taxes, Car Insurance/Gym/Healthcare under PROTECTIVE?). [**3 levels; you review in the wizard**]
 4. Scope of the categories: spending only, or also income/transfer handling and budgets? [**expenses + income + transfer kinds; budgets deferred**]
 5. Keep Lunch Money as the source of record with Tally strictly read-only toward it? [**yes**]
-6. Project location `/mnt/ai/projects/finances-tracker/tally/` in the existing folder, or a new repo? [**subfolder, own git repo**]
+6. Project location `/mnt/ai/projects/omafinances/tally/` in the existing folder, or a new repo? [**subfolder, own git repo**]
