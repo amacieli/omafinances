@@ -319,7 +319,7 @@ mod tests {
             format!("{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", method, path, port)
         };
         // without a token every new route is refused by the guard, whatever the method
-        for (m, p) in [("GET", "/transactions"), ("GET", "/transactions/1"), ("GET", "/accounts"), ("GET", "/categories"), ("POST", "/refresh"), ("GET", "/refresh"), ("POST", "/categories"), ("POST", "/categories/1/rename"), ("POST", "/categories/1/kind"), ("POST", "/categories/1/move"), ("POST", "/categories/1/shift"), ("POST", "/categories/1/delete"), ("POST", "/categories/1/merge"), ("POST", "/transactions/categorize"), ("POST", "/undo"), ("POST", "/redo"), ("GET", "/journal")] {
+        for (m, p) in [("GET", "/transactions"), ("GET", "/transactions/1"), ("GET", "/accounts"), ("GET", "/categories"), ("POST", "/refresh"), ("GET", "/refresh"), ("POST", "/categories"), ("POST", "/categories/1/rename"), ("POST", "/categories/1/kind"), ("POST", "/categories/1/move"), ("POST", "/categories/1/shift"), ("POST", "/categories/1/delete"), ("POST", "/categories/1/merge"), ("POST", "/transactions/categorize"), ("POST", "/undo"), ("POST", "/redo"), ("GET", "/journal"), ("POST", "/smart/preview"), ("POST", "/smart/rows"), ("POST", "/smart/apply"), ("GET", "/rules")] {
             assert_eq!(raw(port, &no_token(m, p)).status, 401, "{} {}", m, p);
         }
         // with a token they reach the router; this state has no database, so data routes say 503
@@ -333,6 +333,12 @@ mod tests {
             ("POST", "/accounts", 405),
             ("POST", "/transactions/1", 405),
             ("GET", "/transactions/1/extra", 404),
+            ("POST", "/smart/preview", 503),
+            ("POST", "/smart/rows", 503),
+            ("POST", "/smart/apply", 503),
+            ("GET", "/rules", 503),
+            ("GET", "/smart/apply", 405),
+            ("POST", "/rules", 405),
         ] {
             assert_eq!(raw(port, &ui_request(m, p, port, TOKEN)).status, want, "{} {}", m, p);
         }

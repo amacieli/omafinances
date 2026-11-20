@@ -63,7 +63,7 @@ fn health_status_and_settings_are_unchanged() {
 #[test]
 fn data_routes_without_database_are_503() {
     let s = no_db();
-    for p in ["/transactions", "/transactions/1", "/accounts", "/categories"] {
+    for p in ["/transactions", "/transactions/1", "/accounts", "/categories", "/rules"] {
         let (code, body) = get(&s, p);
         assert_eq!(code, 503, "{}", p);
         assert!(body["error"].is_string(), "{}", p);
@@ -118,6 +118,11 @@ fn known_paths_with_wrong_method_are_405() {
         ("POST", "/health"),
         ("GET", "/refresh"),
         ("PUT", "/refresh"),
+        ("GET", "/smart/preview"),
+        ("GET", "/smart/rows"),
+        ("PUT", "/smart/apply"),
+        ("POST", "/rules"),
+        ("DELETE", "/rules"),
     ] {
         assert_eq!(handle(&s, m, p, "").0, 405, "{} {}", m, p);
     }
@@ -971,10 +976,95 @@ fn write_routes_without_a_database_are_503() {
         ("POST", "/transactions/categorize", r#"{"ids":[1],"category_id":null}"#),
         ("POST", "/undo", ""),
         ("POST", "/redo", ""),
+        ("POST", "/smart/preview", r#"{"ids":[1],"category_id":1}"#),
+        ("POST", "/smart/rows", r#"{"ids":[1]}"#),
+        ("POST", "/smart/apply", r#"{"category_id":1,"txn_ids":[1]}"#),
     ] {
         let (code, body) = send(&s, m, p, b);
         assert_eq!(code, 503, "{m} {p}");
         assert!(body["error"].is_string(), "{m} {p}");
     }
     assert_eq!(get(&s, "/journal").0, 503);
+}
+
+// ---- categorize with preview (smart routes) ---------------------------------------------------
+
+#[test]
+fn smart_routes_names_and_guards() {
+    assert_eq!(route_name("/smart/preview"), "smart_preview");
+    assert_eq!(route_name("/smart/rows"), "smart_rows");
+    assert_eq!(route_name("/smart/apply"), "smart_apply");
+    assert_eq!(route_name("/rules"), "rules");
+    assert_eq!(route_name("/smart/preview/x"), "unknown");
+    assert_eq!(handle(&no_db(), "POST", "/smart/preview/", "").0, 404);
+}
+
+#[test]
+fn smart_preview_apply_undo_redo_through_the_api() {
+    let (dir, _path, s) = loaded_state();
+    let paint = cat_id(&s, "Paint");
+
+    // preview: the selected row is a seed, the response is read-only
+    let (code, body) = send(&s, "POST", "/smart/preview", &format!(r#"{{"ids":[2],"category_id":{paint}}}"#));
+    assert_eq!(code, 200, "{body}");
+    assert!(body["category"]["path"].as_str().unwrap().contains("Paint"));
+    assert_eq!(body["threshold"], 0.75);
+    assert_eq!(body["clusters"][0]["tier"], "seed");
+    assert_eq!(body["clusters"][0]["txn_ids"], serde_json::json!([2]));
+    assert_eq!(body["summary"]["selected"], 1);
+    assert_eq!(body["summary"]["uncategorized_total"], 3);
+
+    // errors: unknown category 404, no existing ids 400, bad threshold 400, bad body 400
+    assert_eq!(send(&s, "POST", "/smart/preview", r#"{"ids":[2],"category_id":999999}"#).0, 404);
+    let (c, b) = send(&s, "POST", "/smart/preview", &format!(r#"{{"ids":[999],"category_id":{paint}}}"#));
+    assert_eq!((c, b["error"].as_str()), (400, Some("invalid")));
+    assert_eq!(send(&s, "POST", "/smart/preview", &format!(r#"{{"ids":[2],"category_id":{paint},"threshold":1.5}}"#)).0, 400);
+    assert_eq!(send(&s, "POST", "/smart/preview", "[1]").0, 400);
+    assert_eq!(send(&s, "POST", "/smart/preview", &format!(r#"{{"ids":"2","category_id":{paint}}}"#)).0, 400);
+
+    // rows: request order, unknown ids omitted, payee NULL shows as ""
+    let (code, body) = send(&s, "POST", "/smart/rows", r#"{"ids":[3,999,1]}"#);
+    assert_eq!(code, 200);
+    let got: Vec<i64> = body["rows"].as_array().unwrap().iter().map(|r| r["id"].as_i64().unwrap()).collect();
+    assert_eq!(got, vec![3, 1]);
+    assert_eq!(body["rows"][0]["payee"], "");
+
+    // apply with a rule: one batch, cache reloaded before the response
+    let (code, body) = send(
+        &s,
+        "POST",
+        "/smart/apply",
+        &format!(r#"{{"category_id":{paint},"txn_ids":[2],"overwrite":false,"make_rule":{{"name":"  B shop  "}}}}"#),
+    );
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(body["ok"], true);
+    assert_eq!((body["changed"].as_i64(), body["skipped"].as_i64(), body["skipped_conflicts"].as_i64()), (Some(1), Some(0), Some(0)));
+    assert!(body["batch_id"].is_i64());
+    assert!(body["rule_id"].is_i64());
+    assert!(body["label"].as_str().unwrap().starts_with("Categorize 1 transaction as "));
+    assert!(body["label"].as_str().unwrap().ends_with("(+rule)"));
+    let (_, rows) = send(&s, "POST", "/smart/rows", r#"{"ids":[2]}"#);
+    assert!(rows["rows"][0]["category_path"].as_str().unwrap().contains("Paint"), "cache reloaded");
+
+    let (code, rules) = get(&s, "/rules");
+    assert_eq!(code, 200);
+    assert_eq!(rules["rules"].as_array().unwrap().len(), 1);
+    assert_eq!(rules["rules"][0]["name"], "B shop");
+    assert_eq!(rules["rules"][0]["match"]["payee_norm"], "b");
+    assert_eq!(rules["rules"][0]["hits"], 0);
+
+    // bad apply bodies
+    assert_eq!(send(&s, "POST", "/smart/apply", &format!(r#"{{"category_id":{paint},"txn_ids":[]}}"#)).0, 400);
+    assert_eq!(send(&s, "POST", "/smart/apply", &format!(r#"{{"category_id":{paint},"txn_ids":[2],"make_rule":5}}"#)).0, 400);
+    assert_eq!(send(&s, "POST", "/smart/apply", &format!(r#"{{"category_id":{paint},"txn_ids":[2],"overwrite":"yes"}}"#)).0, 400);
+
+    // one undo reverts the category and the rule together; redo brings them back
+    assert_eq!(send(&s, "POST", "/undo", "").0, 200);
+    assert_eq!(get(&s, "/rules").1["rules"], serde_json::json!([]));
+    let (_, rows) = send(&s, "POST", "/smart/rows", r#"{"ids":[2]}"#);
+    assert!(rows["rows"][0]["category_path"].is_null());
+    assert_eq!(send(&s, "POST", "/redo", "").0, 200);
+    assert_eq!(get(&s, "/rules").1["rules"].as_array().unwrap().len(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

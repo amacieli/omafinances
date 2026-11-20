@@ -7,4 +7,5 @@ pub mod db;
 pub mod http;
 pub mod query;
 pub mod search;
+pub mod smart;
 pub mod secrets;

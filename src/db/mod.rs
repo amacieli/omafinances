@@ -3,6 +3,7 @@
 pub mod categories;
 pub mod journal;
 pub mod migrations;
+pub mod rules;
 pub mod views;
 
 use anyhow::{anyhow, bail, Context, Result};

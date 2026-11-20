@@ -5,6 +5,7 @@ import qs.Commons as Commons
 import "state"
 import "state/Query.js" as Query
 import "keys/Keymap.js" as Keymap
+import "state/Smart.js" as Smart
 import "common"
 import "views"
 import "common/Fuzzy.js" as Fuzzy
@@ -90,6 +91,24 @@ FocusScope {
   property string mgrStatus: ""
   property bool mgrStatusError: false
   property var catIds: []             // transactions the categorize picker acts on
+  property bool smartFlow: false      // the category pick is for C (preview), not c (plain assign)
+  // ------------------------------------------------------------------ categorize with preview (C) state
+  property bool smartOpen: false
+  property var smartCat: null         // {id, path}: the category the preview is for
+  property var smartIds: []           // the rows the preview covers (<= Smart.PREVIEW_MAX)
+  property var smartClusters: []      // /smart/preview clusters, response order
+  property var smartSummary: null
+  property var smartSelected: ({})    // cluster key -> bool
+  property var smartExpanded: ({})    // cluster key -> true
+  property var smartRows: ({})        // cluster key -> rows loaded so far
+  property var smartLoadingByKey: ({})
+  property real smartThreshold: 0.75  // requested (shown) threshold
+  property bool smartOverwrite: false // requested (shown) overwrite
+  property var smartShown: ({ threshold: 0.75, overwrite: false })  // what the clusters were computed with
+  property bool smartRule: false      // "also make this a rule"
+  property bool smartBusy: false      // a preview or apply request is in flight
+  property string smartError: ""
+  property int smartGen: 0            // bumped per preview request and on close; stale replies are dropped
   property var pendingCat: null       // {id, name, count, kids, into, intoName}: delete or merge target
   property int promptGen: 0           // bumped when a prompt opens or closes; stale replies are dropped
   property var mgrPendingParent: null // add: the new node's parent (null = top level)
@@ -128,7 +147,7 @@ FocusScope {
   ListModel { id: rows }
   ListModel { id: sideRows }
 
-  readonly property bool overlayOpen: picker.open || prompt.open || help.open || searchBar.open || managerOpen
+  readonly property bool overlayOpen: picker.open || prompt.open || help.open || searchBar.open || managerOpen || smartOpen
 
   // ------------------------------------------------------------------ helpers
   function parseJson(text) {
@@ -726,6 +745,7 @@ FocusScope {
     if (a && a !== root) a.focus = false
     picker.focus = false; prompt.focus = false; help.focus = false
     searchBar.field.focus = false
+    if (smartOpen) { smart.focusKeys(); return }
     if (managerOpen) { manager.focusKeys(); return }
     root.forceActiveFocus()
   }
@@ -890,7 +910,7 @@ FocusScope {
 
   // ------------------------------------------------------------------ categorize (c)
   // Target: the marked rows, else the cursor row. The picker is the generic Picker over the tree.
-  function startCategorize() {
+  function startCategorize(withPreview) {
     if (visualOn) endVisual()
     var list = Marks.effectiveIds(loadedIds(), marks, false, -1, -1)
     if (list.length === 0) {
@@ -899,6 +919,7 @@ FocusScope {
       list = [id]
     }
     catIds = list
+    smartFlow = !!withPreview
     openCategorize()
   }
 
@@ -912,7 +933,7 @@ FocusScope {
     picker.emptyText = "no matching category"
     picker.deletable = false
     picker.entries = Tree.pickerEntries(categoryList, {
-      uncategorized: categoryList.length > 0, uncatCount: uncategorizedCount, newEntry: true })
+      uncategorized: categoryList.length > 0 && !smartFlow, uncatCount: uncategorizedCount, newEntry: true })
     picker.currentKey = ""
     picker.show()
   }
@@ -932,6 +953,183 @@ FocusScope {
     })
   }
 
+  // The category is chosen: a plain assignment for c, the preview for C.
+  function finishCategorize(ids, catId) {
+    if (smartFlow) smartStart(catId)
+    else assignCategory(ids, catId)
+  }
+
+  // ------------------------------------------------------------------ categorize with preview (C)
+  // C: the marked rows (or the cursor row), the category picker, then POST /smart/preview and the
+  // preview overlay. Nothing is written until smartApply(); Esc writes nothing. A reply is dropped
+  // when a newer request (or a close) superseded it; an apply reply always lands, because the write
+  // already happened.
+  function smartStart(catId) {
+    var ids = catIds
+    if (ids.length === 0) return
+    if (ids.length > Smart.PREVIEW_MAX) {
+      toast("the preview covers at most " + Query.fmtCount(Smart.PREVIEW_MAX) + " rows; "
+            + Query.fmtCount(ids.length) + " are marked: mark fewer")
+      return
+    }
+    smartIds = ids
+    smartCat = { id: catId, path: Tree.pathOf(categoryList, String(catId)) }
+    smartClusters = []
+    smartSummary = null
+    smartSelected = ({})
+    smartExpanded = ({})
+    smartRows = ({})
+    smartLoadingByKey = ({})
+    smartRule = false
+    smartThreshold = 0.75
+    smartOverwrite = false
+    smartShown = { threshold: 0.75, overwrite: false }
+    smartError = ""
+    smartOpen = true
+    smartRequest(false)
+    Qt.callLater(smart.focusKeys)
+  }
+
+  // POST /smart/preview with the requested threshold and overwrite. resetConflicts: the overwrite
+  // toggle changed, so conflict clusters go back to their new default. Other clusters keep their
+  // selection by label.
+  function smartRequest(resetConflicts) {
+    var g = ++smartGen
+    smartBusy = true
+    smartError = ""
+    Backend.json("POST", "/smart/preview", {
+      ids: smartIds, category_id: smartCat.id, threshold: smartThreshold, overwrite: smartOverwrite
+    }, function(xhr) {
+      if (g !== smartGen) return
+      smartBusy = false
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j || !j.clusters) {
+        // Keep the clusters on screen; show the error and put the controls back to what they show.
+        smartError = Smart.errorMessage(j, xhrMessage(xhr))
+        smartThreshold = smartShown.threshold
+        smartOverwrite = smartShown.overwrite
+        return
+      }
+      smartShown = { threshold: Smart.clampThreshold(j.threshold), overwrite: smartOverwrite }
+      smartSelected = Smart.retainSelection(smartSelected, j.clusters, resetConflicts)
+      smartClusters = j.clusters
+      smartSummary = j.summary || null
+      smartThreshold = smartShown.threshold
+      // Expansion survives a re-query for clusters whose key is still there; their rows reload.
+      var nk = Smart.clusterKeys(j.clusters)
+      var keep = {}
+      nk.forEach(function(k) { if (smartExpanded[k]) keep[k] = true })
+      smartExpanded = keep
+      smartRows = ({})
+      smartLoadingByKey = ({})
+      Object.keys(keep).forEach(function(k) { smartLoadRows(k) })
+      if (j.category && j.category.path) smartCat = { id: smartCat.id, path: String(j.category.path) }
+    })
+  }
+
+  // Overlay keys (smart scope, minus the cursor moves the overlay does itself).
+  function smartAct(id) {
+    var it = smart.currentItem()
+    if (id === "smart.toggle") { if (it) smartSelected = Smart.toggled(smartSelected, it.ckey) }
+    else if (id === "smart.all") smartSelected = Smart.setAll(smartClusters, true)
+    else if (id === "smart.none") smartSelected = Smart.setAll(smartClusters, false)
+    else if (id === "smart.expand") { if (it) smartExpand(it) }
+    else if (id === "smart.thresholdDown") smartStep(-1)
+    else if (id === "smart.thresholdUp") smartStep(1)
+    else if (id === "smart.overwrite") { smartOverwrite = !smartOverwrite; smartRequest(true) }
+    else if (id === "smart.rule") smartRule = !smartRule
+    else if (id === "smart.apply") smartApply()
+    else if (id === "smart.cancel") smartClose()
+  }
+
+  function smartStep(dir) {
+    var t = Smart.stepThreshold(smartThreshold, dir)
+    if (t === smartThreshold) {
+      toast("threshold is at " + Smart.thresholdPercent(t) + " (" + (dir > 0 ? "top" : "bottom") + ")")
+      return
+    }
+    smartThreshold = t
+    smartRequest(false)
+  }
+
+  // Enter on a cluster: expand or collapse it (loading its first page). On "more": the next page.
+  function smartExpand(it) {
+    var k = it.ckey
+    if (it.kind === "more") { smartLoadRows(k); return }
+    var e = Object.assign({}, smartExpanded)
+    if (e[k]) { delete e[k]; smartExpanded = e; return }
+    e[k] = true
+    smartExpanded = e
+    smartLoadRows(k)
+  }
+
+  // POST /smart/rows for the next 50 ids of a cluster (lazy; the cluster's rows arrive in order).
+  function smartLoadRows(k) {
+    var c = Smart.clusterByKey(smartClusters, Smart.clusterKeys(smartClusters), k)
+    if (!c || smartLoadingByKey[k]) return
+    var have = (smartRows[k] || []).length
+    var ids = Smart.nextPageIds(c.txn_ids, have)
+    if (ids.length === 0) return
+    var g = smartGen
+    var l = Object.assign({}, smartLoadingByKey)
+    l[k] = true
+    smartLoadingByKey = l
+    Backend.json("POST", "/smart/rows", { ids: ids }, function(xhr) {
+      if (g !== smartGen) return
+      var done = Object.assign({}, smartLoadingByKey)
+      delete done[k]
+      smartLoadingByKey = done
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j || !j.rows) { smartError = Smart.errorMessage(j, xhrMessage(xhr)); return }
+      var m = Object.assign({}, smartRows)
+      m[k] = (smartRows[k] || []).concat(j.rows)
+      smartRows = m
+    })
+  }
+
+  // y: POST /smart/apply with the selected clusters' rows, one batch. The toast names the change.
+  function smartApply() {
+    if (smartBusy || smartClusters.length === 0) return
+    var ids = Smart.selectedTxnIds(smartClusters, smartSelected)
+    if (ids.length === 0) { smartError = "nothing selected: Space picks a cluster, a selects all"; return }
+    if (ids.length > Smart.APPLY_MAX) {
+      smartError = Query.fmtCount(ids.length) + " rows selected; the limit is "
+                   + Query.fmtCount(Smart.APPLY_MAX) + ". Deselect some."
+      return
+    }
+    smartBusy = true
+    smartError = ""
+    Backend.json("POST", "/smart/apply", {
+      category_id: smartCat.id, txn_ids: ids, overwrite: smartShown.overwrite,
+      make_rule: smartRule ? {} : null
+    }, function(xhr) {
+      smartBusy = false
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (!j || !j.ok) {
+        var msg = Smart.errorMessage(j, xhrMessage(xhr))
+        if (smartOpen) smartError = msg
+        else toast(msg)
+        return
+      }
+      var note = String(j.label || "categorized")
+      if (Number(j.skipped_conflicts) > 0) note += "  \u00b7  " + Query.fmtCount(Number(j.skipped_conflicts)) + " conflicts skipped"
+      toast(note + "   u to undo")
+      smartClose()
+      marks = ({})
+      visualOn = false
+      visualAnchor = -1
+      refreshMarks()
+      afterChange()
+    })
+  }
+
+  // Esc (and after apply): close without writing. Any preview reply still in flight is dropped.
+  function smartClose() {
+    smartGen++
+    smartOpen = false
+    smartBusy = false
+  }
+
   // "+ New category": the typed path is resolved; missing levels are created one by one, then the
   // transactions are assigned. A 409 from the server (max depth) is shown inline.
   function openNewCategory() {
@@ -945,14 +1143,14 @@ FocusScope {
     if (p.error) { prompt.fail(p.error); return }
     var r = Tree.resolvePath(categoryList, p.segments)
     var ids = catIds
-    if (r.missing.length === 0) { prompt.close(); assignCategory(ids, r.id); return }
+    if (r.missing.length === 0) { prompt.close(); finishCategorize(ids, r.id); return }
     var gen = promptGen
     prompt.busy = true
     createChain(r.parentId, r.missing, 0, function(err, newId) {
       if (gen !== promptGen) { loadFacets(); return }      // cancelled meanwhile: keep the new levels, assign nothing
       if (err !== null) { prompt.fail(err); loadFacets(); return }
       prompt.close()
-      assignCategory(ids, newId)
+      finishCategorize(ids, newId)
     })
   }
 
@@ -981,6 +1179,7 @@ FocusScope {
   function categoryPickerChosen(ctx, key) {
     if (ctx === "categorize") {
       if (key === "new") openNewCategory()
+      else if (smartFlow) smartStart(Number(key))
       else assignCategory(catIds, key === "none" ? null : Number(key))
       return true
     }
@@ -1736,7 +1935,8 @@ FocusScope {
       case "visual.toggle": toggleVisual(); break
       case "mark.all": markAll(); break
       case "marks.clear": escapeTable(); break
-      case "categorize": startCategorize(); break
+      case "categorize": startCategorize(false); break
+      case "categorizeSmart": startCategorize(true); break
       case "manager.open": openManager(); break
       case "undo": history("undo"); break
       case "redo": history("redo"); break
@@ -2065,6 +2265,26 @@ FocusScope {
     status: root.mgrStatus
     statusError: root.mgrStatusError
     onAct: function(id) { root.mgrAct(id) }
+  }
+
+  SmartPreview {
+    id: smart
+    anchors.fill: parent
+    open: root.smartOpen
+    clusters: root.smartClusters
+    summary: root.smartSummary
+    selected: root.smartSelected
+    expanded: root.smartExpanded
+    rowsByKey: root.smartRows
+    loadingByKey: root.smartLoadingByKey
+    threshold: root.smartThreshold
+    overwrite: root.smartOverwrite
+    makeRule: root.smartRule
+    busy: root.smartBusy
+    error: root.smartError
+    categoryPath: root.smartCat ? String(root.smartCat.path) : ""
+    onAct: function(id) { root.smartAct(id) }
+    onOpenChanged: if (!open) Qt.callLater(root.restoreFocus)
   }
 
 

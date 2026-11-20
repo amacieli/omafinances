@@ -268,7 +268,7 @@ fn height(c: &Connection, id: i64) -> Result<u32> {
     go(c, id, MAX_WALK)
 }
 
-fn path_of(c: &Connection, id: i64) -> Result<String> {
+pub(crate) fn path_of(c: &Connection, id: i64) -> Result<String> {
     let mut names = Vec::new();
     let mut cur = Some(id);
     for _ in 0..MAX_WALK {
@@ -329,14 +329,14 @@ fn remove(c: &Connection, p: &mut Pending, id: i64) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TxnSet {
+pub(crate) enum TxnSet {
     Changed,
     Same,
     Missing,
 }
 
 /// Set one transaction's local category. Journals only real changes.
-fn set_txn(c: &Connection, p: &mut Pending, txn: i64, cat: Option<i64>) -> Result<TxnSet> {
+pub(crate) fn set_txn(c: &Connection, p: &mut Pending, txn: i64, cat: Option<i64>) -> Result<TxnSet> {
     let cur: Option<Option<i64>> = c
         .query_row("SELECT category_local_id FROM transactions WHERE id=?1", [txn], |r| r.get(0))
         .optional()?;

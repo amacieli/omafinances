@@ -20,6 +20,7 @@ use std::sync::{Mutex, RwLock, RwLockReadGuard};
 
 mod edit;
 mod slash;
+mod smart;
 
 /// A status code and its JSON body.
 pub(crate) type Resp = (u16, Value);
@@ -97,6 +98,10 @@ pub fn route_name(path: &str) -> &'static str {
         Route::Views => "views",
         Route::View(_) => "view",
         Route::History => "history",
+        Route::SmartPreview => "smart_preview",
+        Route::SmartRows => "smart_rows",
+        Route::SmartApply => "smart_apply",
+        Route::Rules => "rules",
         Route::Unknown => "unknown",
     }
 }
@@ -119,6 +124,10 @@ enum Route<'a> {
     Views,
     View(&'a str),
     History,
+    SmartPreview,
+    SmartRows,
+    SmartApply,
+    Rules,
     Unknown,
 }
 
@@ -138,6 +147,10 @@ fn route(path: &str) -> Route<'_> {
         "/search/parse" => Route::SearchParse,
         "/views" => Route::Views,
         "/history" => Route::History,
+        "/smart/preview" => Route::SmartPreview,
+        "/smart/rows" => Route::SmartRows,
+        "/smart/apply" => Route::SmartApply,
+        "/rules" => Route::Rules,
         _ => {
             if let Some(rest) = path.strip_prefix("/transactions/") {
                 if !rest.is_empty() && !rest.contains('/') {
@@ -187,6 +200,7 @@ pub fn handle_body(state: &AppState, method: &str, path: &str, query: &str, body
         Route::Refresh | Route::CategoryAction(_, _) | Route::Categorize | Route::Undo | Route::Redo => {
             &["POST"]
         }
+        Route::SmartPreview | Route::SmartRows | Route::SmartApply => &["POST"],
         Route::Categories => &["GET", "POST"],
         Route::Journal => &["GET"],
         Route::Views | Route::History => &["GET", "POST"],
@@ -220,6 +234,10 @@ pub fn handle_body(state: &AppState, method: &str, path: &str, query: &str, body
         Route::View(id) => slash::view_delete(state, id),
         Route::History if method == "POST" => slash::history_add(state, body),
         Route::History => slash::history_list(state),
+        Route::SmartPreview => smart::preview(state, body),
+        Route::SmartRows => smart::rows(state, body),
+        Route::SmartApply => smart::apply(state, body),
+        Route::Rules => smart::rules(state),
         Route::Unknown => error(404, "not found"),
     }
 }

@@ -49,6 +49,7 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `V` | Start a visual range from the cursor (`j`/`k` extend it); `Esc` leaves visual mode and keeps the marks |
 | `Ctrl-a` | Mark every row matching the filters (loads all matching pages first, capped at 5000) |
 | `c` | Categorize: the marked rows, else the cursor row. `Uncategorized` clears; `+ New category…` takes a path like `Home/Pets/Dogs` |
+| `C` | Categorize with preview: pick a category, then review clusters (similar payees, recurring, amount bands) before anything is written. Same rows as `c` (up to 500 marked); `y` applies in one batch, `u` undoes it |
 | `Esc` | Clear marks first; quits only when nothing is marked. Elsewhere `Esc` returns to the table |
 
 ### Category manager (`m`; overlay, keys work inside it)
@@ -69,6 +70,24 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `Esc` | Close |
 
 The header shows `max depth N`; a server refusal (e.g. too deep) shows in the status line.
+
+### Categorize with preview (`C`; overlay, keys work inside it)
+
+The header reads `Will categorize N of M uncategorized · K conflicts skipped · $T`. Conflict clusters (rows already in a different category) are shown in the warning color and skipped unless overwrite is on; same-category clusters are dimmed and write nothing. Each collapsed cluster shows up to three exemplars.
+
+| Key | Action |
+| --- | --- |
+| `j` / `Down`, `k` / `Up` | Move the cursor (`PgDown` / `PgUp`: ten lines) |
+| `Space` | Select or deselect the cluster under the cursor |
+| `a` / `n` | Select every cluster / deselect every cluster |
+| `Enter` | Expand or collapse a cluster's rows; on `… N more` load the next 50 |
+| `[` / `]` | Threshold down / up by 0.05 (shown as a percent, 50%–100%); re-queries, keeping each cluster's selection by label |
+| `o` | Overwrite: also take rows already in another category (re-queries) |
+| `r` | Also make this a rule (saved in the same batch; undone with it) |
+| `y` | Apply the selection in one batch; the toast says `u to undo` |
+| `Esc` | Cancel: nothing is written |
+
+Keys for the picker step are the usual ones; the preview only appears after a category is chosen.
 
 ### Sidebar (focus: sidebar, Tab)
 

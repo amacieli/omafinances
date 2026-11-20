@@ -20,10 +20,11 @@ var SCOPE_TITLES = {
   picker: "Pickers: filter menu, sort, sub-pickers",
   prompt: "Typed input (amount, dates, text)",
   manager: "Category manager (m; keys work inside the overlay)",
+  smart: "Categorize with preview (C; keys work inside the overlay)",
   help: "This help"
 }
 
-var SCOPE_ORDER = ["global", "table", "manager", "sidebar", "detail", "search", "picker", "prompt", "help"]
+var SCOPE_ORDER = ["global", "table", "manager", "smart", "sidebar", "detail", "search", "picker", "prompt", "help"]
 
 var BINDINGS = [
   // ---- anywhere
@@ -65,6 +66,7 @@ var BINDINGS = [
   { id: "mark.all", scope: "table", keys: ["C-a"], label: "Mark every row that matches the filters (loads all pages; cap 5000)" },
   { id: "marks.clear", scope: "table", keys: ["Esc"], label: "Esc: end visual mode (keeps marks); then clear the marks; with nothing marked, quit" },
   { id: "categorize", scope: "table", keys: ["c"], label: "Categorize the marked rows, or this row (category picker)" },
+  { id: "categorizeSmart", scope: "table", keys: ["C"], label: "Categorize with preview: pick a category, then review clusters before anything is written" },
 
   // ---- category manager (full-pane overlay; AppShell runs the actions)
   { id: "mgr.down", scope: "manager", keys: ["j", "Down"], label: "Move down the tree" },
@@ -81,6 +83,22 @@ var BINDINGS = [
   { id: "mgr.merge", scope: "manager", keys: ["M"], label: "Merge into... (asks for the target and confirms)" },
   { id: "mgr.filter", scope: "manager", keys: ["Enter"], label: "Filter the transactions by this category and close" },
   { id: "mgr.close", scope: "manager", keys: ["Esc"], label: "Close the manager" },
+
+  // ---- categorize with preview (full-pane overlay after C and a category pick; AppShell runs the actions)
+  { id: "smart.down", scope: "smart", keys: ["j", "Down"], label: "Move down the list" },
+  { id: "smart.up", scope: "smart", keys: ["k", "Up"], label: "Move up the list" },
+  { id: "smart.pagedown", scope: "smart", keys: ["PgDown"], label: "Move down ten lines" },
+  { id: "smart.pageup", scope: "smart", keys: ["PgUp"], label: "Move up ten lines" },
+  { id: "smart.toggle", scope: "smart", keys: ["Space"], label: "Select or deselect the cluster under the cursor" },
+  { id: "smart.all", scope: "smart", keys: ["a"], label: "Select every cluster" },
+  { id: "smart.none", scope: "smart", keys: ["n"], label: "Deselect every cluster" },
+  { id: "smart.expand", scope: "smart", keys: ["Enter"], label: "Expand or collapse a cluster's rows; on \"more\" load the next 50 rows" },
+  { id: "smart.thresholdDown", scope: "smart", keys: ["["], label: "Lower the threshold by 5 points (re-queries; selection kept by cluster)" },
+  { id: "smart.thresholdUp", scope: "smart", keys: ["]"], label: "Raise the threshold by 5 points (re-queries; selection kept by cluster)" },
+  { id: "smart.overwrite", scope: "smart", keys: ["o"], label: "Overwrite: also take rows already in another category (re-queries)" },
+  { id: "smart.rule", scope: "smart", keys: ["r"], label: "Also make this a rule (saved with the change; undone with it)" },
+  { id: "smart.apply", scope: "smart", keys: ["y"], label: "Apply the selection in one batch (u undoes all of it)" },
+  { id: "smart.cancel", scope: "smart", keys: ["Esc"], label: "Cancel: nothing is written" },
 
   // ---- sidebar
   { id: "move.down", scope: "sidebar", keys: ["j", "Down"], label: "Move down (headers are skipped)" },

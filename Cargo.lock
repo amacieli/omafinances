@@ -1099,6 +1099,7 @@ dependencies = [
  "env_logger",
  "keyring",
  "log",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
