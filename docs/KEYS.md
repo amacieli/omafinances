@@ -37,8 +37,11 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `k` / `Up` | Move up one row |
 | `g` | First row |
 | `G` | Last row (loads the remaining pages first) |
-| `Ctrl-d` | Page down (half a screen) |
-| `Ctrl-u` | Page up (half a screen) |
+| `Ctrl-d` | Half page down |
+| `Ctrl-u` | Half page up |
+| `PgDown` | Page down (a full screen) |
+| `PgUp` | Page up (a full screen) |
+| `Home` / `End` | First / last row (same as `g` / `G`) |
 | `Esc` | Quit (from the table; elsewhere `Esc` returns to the table) |
 
 ### Sidebar (focus: sidebar, Tab)
@@ -48,6 +51,7 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `j` / `Down` | Move down (headers are skipped) |
 | `k` / `Up` | Move up |
 | `Enter` | Filter by this account or category (replaces that facet) |
+| `PgDown` / `PgUp` | Move down / up a page |
 | `Space` | Toggle this account or category as a filter |
 | `x` | Clear the account or category filter |
 | `Enter` | On a saved view: apply it (replaces the search and sets its sort) |
@@ -60,6 +64,7 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | --- | --- |
 | `j` / `Down` | Scroll down |
 | `k` / `Up` | Scroll up |
+| `PgDown` / `PgUp` | Scroll down / up a page |
 | `i` / `Enter` | Close the detail pane |
 | `Esc` | Back to the table |
 

@@ -50,15 +50,19 @@ var BINDINGS = [
   // ---- transaction table
   { id: "move.down", scope: "table", keys: ["j", "Down"], label: "Move down one row" },
   { id: "move.up", scope: "table", keys: ["k", "Up"], label: "Move up one row" },
-  { id: "move.first", scope: "table", keys: ["g"], label: "First row" },
-  { id: "move.last", scope: "table", keys: ["G"], label: "Last row (loads the remaining pages first)" },
-  { id: "page.down", scope: "table", keys: ["C-d"], label: "Page down (half a screen)" },
-  { id: "page.up", scope: "table", keys: ["C-u"], label: "Page up (half a screen)" },
+  { id: "move.first", scope: "table", keys: ["g", "Home"], label: "First row" },
+  { id: "move.last", scope: "table", keys: ["G", "End"], label: "Last row (loads the remaining pages first)" },
+  { id: "page.down", scope: "table", keys: ["C-d"], label: "Half page down" },
+  { id: "page.fulldown", scope: "table", keys: ["PgDown"], label: "Page down (a full screen)" },
+  { id: "page.up", scope: "table", keys: ["C-u"], label: "Half page up" },
+  { id: "page.fullup", scope: "table", keys: ["PgUp"], label: "Page up (a full screen)" },
   { id: "quit", scope: "table", keys: ["Esc"], label: "Quit (from the table; elsewhere Esc returns to the table)" },
 
   // ---- sidebar
   { id: "move.down", scope: "sidebar", keys: ["j", "Down"], label: "Move down (headers are skipped)" },
   { id: "move.up", scope: "sidebar", keys: ["k", "Up"], label: "Move up" },
+  { id: "side.pagedown", scope: "sidebar", keys: ["PgDown"], label: "Move down a page" },
+  { id: "side.pageup", scope: "sidebar", keys: ["PgUp"], label: "Move up a page" },
   { id: "side.apply", scope: "sidebar", keys: ["Enter"], label: "Filter by this account or category (replaces that facet); a saved view replaces the search" },
   { id: "side.toggle", scope: "sidebar", keys: ["Space"], label: "Toggle this account or category as a filter; on a saved view: apply it" },
   { id: "view.delete", scope: "sidebar", keys: ["d"], label: "Delete the saved view under the cursor (asks first)" },
@@ -68,6 +72,8 @@ var BINDINGS = [
   // ---- detail pane
   { id: "detail.down", scope: "detail", keys: ["j", "Down"], label: "Scroll down" },
   { id: "detail.up", scope: "detail", keys: ["k", "Up"], label: "Scroll up" },
+  { id: "detail.pagedown", scope: "detail", keys: ["PgDown"], label: "Scroll down a page" },
+  { id: "detail.pageup", scope: "detail", keys: ["PgUp"], label: "Scroll up a page" },
   { id: "detail.close", scope: "detail", keys: ["i", "Enter"], label: "Close the detail pane" },
   { id: "focus.table", scope: "detail", keys: ["Esc"], label: "Back to the table" },
 
@@ -121,6 +127,8 @@ function token(e) {
     case Qt.Key_Right: return "Right"
     case Qt.Key_Backspace: return "Backspace"
     case Qt.Key_Delete: return "Delete"
+    case Qt.Key_Home: return "Home"
+    case Qt.Key_End: return "End"
     case Qt.Key_PageUp: return "PgUp"
     case Qt.Key_PageDown: return "PgDown"
   }

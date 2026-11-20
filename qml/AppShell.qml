@@ -479,14 +479,14 @@ FocusScope {
     picker.title = "Account"
     picker.hint = "Matches transactions in that account."
     picker.emptyText = "no matching account"
-    var list = [{ key: "", label: "Any account", detail: "" }]
+    var list = [{ key: "", label: "All accounts", detail: filter.account === "" ? "current" : "" }]
     for (var i = 0; i < accountList.length; i++) {
       var a = accountList[i]
       list.push({ key: String(a.id), label: String(a.name || a.id),
                   detail: (a.institution ? a.institution + "  \u00b7  " : "") + Query.fmtCount(a.count) + " txns" })
     }
     picker.entries = list
-    picker.currentKey = filter.account
+    picker.currentKey = ""   // always start on "All accounts", like OmaLook
     picker.show()
   }
 
@@ -495,7 +495,7 @@ FocusScope {
     picker.title = "Category"
     picker.hint = "A category includes its subcategories."
     picker.emptyText = "no matching category"
-    var list = [{ key: "", label: "Any category", detail: "" },
+    var list = [{ key: "", label: "All categories", detail: filter.category === "" ? "current" : "" },
                 { key: "none", label: "Uncategorized", detail: Query.fmtCount(uncategorizedCount) + " txns" }]
     for (var i = 0; i < categoryList.length; i++) {
       var c = categoryList[i]
@@ -505,7 +505,7 @@ FocusScope {
                   detail: Query.fmtCount(c.count_subtree) + " txns" })
     }
     picker.entries = list
-    picker.currentKey = filter.category
+    picker.currentKey = ""   // always start on "All categories"
     picker.show()
   }
 
@@ -1164,6 +1164,10 @@ FocusScope {
       case "detail.close": detailOpen = false; zone = "table"; break
       case "detail.down": detailPane.scrollBy(40); break
       case "detail.up": detailPane.scrollBy(-40); break
+      case "detail.pagedown": detailPane.scrollBy(detailPane.height * 0.9); break
+      case "detail.pageup": detailPane.scrollBy(-detailPane.height * 0.9); break
+      case "side.pagedown": for (var pd = 0; pd < 10; pd++) moveSide(1); break
+      case "side.pageup": for (var pu = 0; pu < 10; pu++) moveSide(-1); break
       case "filter.clearAll": clearAll(); break
       case "filter.clearLast": clearNewestChip(); break
       case "filter.clearFacet": clearSideFacet(); break
@@ -1178,6 +1182,8 @@ FocusScope {
       case "move.last": goEnd(); break
       case "page.down": moveRow(pageStep()); break
       case "page.up": moveRow(-pageStep()); break
+      case "page.fulldown": moveRow(pageStep() * 2); break
+      case "page.fullup": moveRow(-pageStep() * 2); break
       case "side.apply": sideActivate(false); break
       case "side.toggle": sideActivate(true); break
     }
