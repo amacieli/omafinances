@@ -2,7 +2,7 @@ Weekly financial report specification
 -------------------------------------
 
 Sender: adam.macielinski@gmail.com 
-To: adam@macielinski.net 
+To: [reports] recipient in settings.toml (not in the repo)
 Subject line: OmaFinances - Weekly Finances Report
 Body: use the same Nerd fixed-point font for the entire message
 

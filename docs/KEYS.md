@@ -52,7 +52,8 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `Space` | Mark or unmark the cursor row, then move down |
 | `V` | Start a visual range from the cursor (`j`/`k` extend it); `Esc` leaves visual mode and keeps the marks |
 | `Ctrl-a` | Mark every row matching the filters (loads all matching pages first, capped at 5000) |
-| `Enter` / `e` | Open the note dialog (NOTES column) for the marked rows, else the cursor row. It shows the transaction, prefills its note (empty when several rows are marked; it replaces all their notes), and counts characters out of 255; `u` undoes the save |
+| `Enter` | Open the transaction details pane and move focus to it (`i` toggles it) |
+| `n` | Open the note dialog (NOTES column) for the marked rows, else the cursor row. It shows the transaction, prefills its note (empty when several rows are marked; it replaces all their notes), and counts characters out of 255; `u` undoes the save |
 | `c` | Categorize: the marked rows, else the cursor row. `Uncategorized` clears; `+ New category…` takes a path like `Home/Pets/Dogs` |
 | `C` | Categorize with preview: pick a category, then review clusters (similar payees, recurring, amount bands) before anything is written. Same rows as `c` (up to 500 marked); `y` applies in one batch, `u` undoes it |
 | `Esc` | Clear marks first (ends visual mode first if it is on). Esc never quits; use `q`. |
@@ -183,7 +184,7 @@ The bar owns its keys while it is open. Typing filters the table live once the q
 | `Enter` | Apply (empty clears; a bad value is shown inline and never sent to the backend) |
 | `Esc` | Cancel |
 
-### Note dialog (Enter or `e` on a transaction)
+### Note dialog (`n` on a transaction)
 
 | Key | Action |
 | --- | --- |
@@ -235,7 +236,8 @@ Commands (the bar text starts with `:`): `:save <name>` saves the active query a
 
 | Key | Action |
 | --- | --- |
-| `Esc` / `q` / `?` | Close |
+| `/` | Search the list: type to filter by key or description; Backspace deletes; Enter keeps the filter and returns to scrolling; Esc clears it |
+| `Esc` / `q` / `?` | Close (Esc first clears a kept filter) |
 | `j` / `Down` | Scroll down |
 | `k` / `Up` | Scroll up |
 

@@ -19,7 +19,7 @@ var SCOPE_TITLES = {
   search: "Slash search bar (focus: the / bar; typing is a search)",
   picker: "Pickers: filter menu, sort, sub-pickers",
   prompt: "Typed input (amount, dates, text)",
-  notes: "Note dialog (Enter or e on a transaction)",
+  notes: "Note dialog (n on a transaction)",
   manager: "Category manager (m; keys work inside the overlay)",
   smart: "Categorize with preview (C; keys work inside the overlay)",
   dash: "Dashboard and insights (D; keys work inside the overlay)",
@@ -77,7 +77,8 @@ var BINDINGS = [
   { id: "mark.all", scope: "table", keys: ["C-a"], label: "Mark every row that matches the filters (loads all pages; cap 5000)" },
   { id: "marks.clear", scope: "table", keys: ["Esc"], label: "Esc: end visual mode (keeps marks); then clear the marks" },
   { id: "categorize", scope: "table", keys: ["c"], label: "Categorize the marked rows, or this row (category picker)" },
-  { id: "notes.edit", scope: "table", keys: ["Enter", "e"], label: "Open the note dialog for the marked rows, or this row (prefilled; empty removes the note; u undoes)" },
+  { id: "detail.open", scope: "table", keys: ["Enter"], label: "Open the transaction details pane and move focus to it" },
+  { id: "notes.edit", scope: "table", keys: ["n"], label: "Open the note dialog for the marked rows, or this row (prefilled; empty removes the note; u undoes)" },
   { id: "categorizeSmart", scope: "table", keys: ["C"], label: "Categorize with preview: pick a category, then review clusters before anything is written" },
 
   // ---- category manager (full-pane overlay; AppShell runs the actions)
@@ -211,7 +212,8 @@ var BINDINGS = [
   // ---- help overlay
   { id: "help.close", scope: "help", keys: ["Esc", "q", "?"], label: "Close" },
   { id: "help.down", scope: "help", keys: ["j", "Down"], label: "Scroll down" },
-  { id: "help.up", scope: "help", keys: ["k", "Up"], label: "Scroll up" }
+  { id: "help.up", scope: "help", keys: ["k", "Up"], label: "Scroll up" },
+  { id: "help.search", scope: "help", keys: ["/"], label: "Search the list: type to filter, Enter keeps the filter, Esc clears it" }
 ]
 
 // Turns a key event into a token, or "" when the key means nothing to us.

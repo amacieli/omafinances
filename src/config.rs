@@ -39,6 +39,8 @@ pub struct ReportsSettings {
     /// Addresses reports may be sent to, in addition to the authenticated Gmail sender (which is always allowed).
     /// Empty = only the sender.
     pub allowed_recipients: Vec<String>,
+    /// The address the weekly report is sent to (read by scripts/weekly_report.py). Must be allowed.
+    pub recipient: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -88,7 +90,7 @@ impl Default for MailSettings {
 }
 impl Default for ReportsSettings {
     fn default() -> Self {
-        ReportsSettings { allowed_recipients: Vec::new() }
+        ReportsSettings { allowed_recipients: Vec::new(), recipient: String::new() }
     }
 }
 impl Default for CategorySettings {

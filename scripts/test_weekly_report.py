@@ -20,6 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import weekly_report as wr  # noqa: E402
 
 
+TEST_TO = "adam@test.example"  # stands in for [reports] recipient; the real one lives in settings.toml
+
 class MoneyFormatting(unittest.TestCase):
     def test_rounds_half_away_from_zero_to_whole_dollars(self):
         self.assertEqual(wr.money_int(2.5), 3)
@@ -250,7 +252,8 @@ class SendPath(unittest.TestCase):
         cls.client_json = Path(cls.tmp.name) / "client.json"
         cls.client_json.write_text(json.dumps({"installed": {"client_id": "cid", "client_secret": "csec"}}))
         os.environ["OMAFINANCES_GMAIL_REFRESH_TOKEN"] = "RT-test"
-        cls.settings = {"mail": {"client_secret_file": str(cls.client_json)}}
+        cls.settings = {"mail": {"client_secret_file": str(cls.client_json)},
+                        "reports": {"recipient": TEST_TO, "allowed_recipients": [TEST_TO]}}
         cls.report = wr.build_report(make_db(), dt.date(2026, 11, 21))
 
     @classmethod
@@ -260,12 +263,12 @@ class SendPath(unittest.TestCase):
 
     def test_send_posts_multipart_message_to_the_allowed_recipient(self):
         FakeGmail.sent = []
-        msg_id = wr.send_report(self.report, self.settings)
+        msg_id = wr.send_report(self.report, self.settings, TEST_TO)
         self.assertEqual(msg_id, "msg-123")
         self.assertEqual(len(FakeGmail.sent), 1)
         parsed = email.message_from_bytes(base64.urlsafe_b64decode(FakeGmail.sent[0] + "=="))
         self.assertEqual(parsed["Subject"], wr.SUBJECT)
-        self.assertEqual(parsed["To"], wr.RECIPIENT)
+        self.assertEqual(parsed["To"], TEST_TO)
         self.assertEqual(parsed["From"], wr.SENDER)
         types = {p.get_content_type() for p in parsed.walk()}
         self.assertIn("text/plain", types)
@@ -277,7 +280,7 @@ class SendPath(unittest.TestCase):
 
     def test_rejects_header_injection(self):
         with self.assertRaises(SystemExit):
-            wr.build_message("hi\r\nBcc: x@example.com", wr.RECIPIENT, "t", "<p>h</p>")
+            wr.build_message("hi\r\nBcc: x@example.com", TEST_TO, "t", "<p>h</p>")
 
 
 if __name__ == "__main__":

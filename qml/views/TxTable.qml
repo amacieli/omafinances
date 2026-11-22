@@ -273,4 +273,14 @@ Item {
     height: Math.max(Style.space(24), list.height * list.visibleArea.heightRatio)
     color: Qt.alpha(Commons.Color.menu.text, 0.35)
   }
+
+  // Focus frame: lights up when the table holds the keyboard, like the sidebar and detail frames.
+  Rectangle {
+    anchors.fill: parent
+    z: 20
+    color: "transparent"
+    border.width: Style.space(1)
+    border.color: root.focusedPane ? Commons.Color.menu.selectedBorder : Commons.Color.menu.border
+    radius: Style.cornerRadius
+  }
 }

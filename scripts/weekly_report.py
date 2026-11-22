@@ -3,7 +3,7 @@
 
 Spec: docs/EMAIL_REPORT.md. Everything in the report is computed from the local
 SQLCipher database by plain Python; no AI or network call is involved in building it.
-The network is used only by --send (Gmail API), and only to the allowlisted recipient.
+The network is used only by --send (Gmail API), and only to [reports] recipient, which must be on the allowlist.
 
 Usage (run with the project venv, which has sqlcipher3):
   .venv/bin/python scripts/weekly_report.py                    # print plain text
@@ -41,7 +41,6 @@ SETTINGS = Path.home() / ".config/omafinances/settings.toml"
 
 # ---------------------------------------------------------------- spec constants
 SENDER = "adam.macielinski@gmail.com"
-RECIPIENT = "adam@macielinski.net"
 SUBJECT = "OmaFinances - Weekly Finances Report"
 FOCUS_DAYS = 90
 FONT_STACK = ("'JetBrainsMono Nerd Font','JetBrainsMono NF','Nerd Font Mono',"
@@ -618,11 +617,25 @@ def build_message(subject: str, to: str, text: str, html_body: str) -> EmailMess
     return msg
 
 
-def send_report(report, settings, to: str = RECIPIENT) -> str:
+def report_recipient(settings: dict) -> str:
+    """The one address this report goes to: [reports] recipient in settings.toml (kept out of the repo)."""
+    to = str((settings.get("reports") or {}).get("recipient") or "").strip()
+    if not to:
+        raise SystemExit("[reports] recipient is not set in ~/.config/omafinances/settings.toml")
+    return to
+
+
+def allowed_recipients(settings: dict) -> set:
+    """The sender plus [reports] allowed_recipients (the same allowlist the Rust side enforces)."""
+    extra = (settings.get("reports") or {}).get("allowed_recipients") or []
+    return {SENDER.lower(), *(str(a).strip().lower() for a in extra if str(a).strip())}
+
+
+def send_report(report, settings, to: str) -> str:
     import requests
 
-    if to != RECIPIENT:
-        raise SystemExit(f"refusing to send to {to}: the only allowed recipient is {RECIPIENT}")
+    if to.strip().lower() not in allowed_recipients(settings):
+        raise SystemExit(f"refusing to send to {to}: not in [reports] allowed_recipients")
     base, _, userinfo_url = gmail_bases()
     token = access_token(settings)
     headers = {"Authorization": f"Bearer {token}"}
@@ -645,7 +658,7 @@ def main(argv=None) -> int:
     ap.add_argument("--db", type=Path, default=None)
     ap.add_argument("--html", type=Path, help="write the HTML body to this path")
     ap.add_argument("--draft", type=Path, help="write the Markdown draft to this path")
-    ap.add_argument("--send", action="store_true", help="send the email to the allowed recipient")
+    ap.add_argument("--send", action="store_true", help="send the email to [reports] recipient")
     args = ap.parse_args(argv)
 
     settings = load_settings()
@@ -664,8 +677,9 @@ def main(argv=None) -> int:
         args.draft.write_text(render_markdown(report))
         wrote.append(str(args.draft))
     if args.send:
-        msg_id = send_report(report, settings)
-        wrote.append(f"sent to {RECIPIENT} (Gmail id {msg_id})")
+        to = report_recipient(settings)
+        msg_id = send_report(report, settings, to)
+        wrote.append(f"sent to {to} (Gmail id {msg_id})")
     if not wrote:
         sys.stdout.write(render_text(report))
     else:

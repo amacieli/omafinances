@@ -2432,6 +2432,7 @@ FocusScope {
       case "sort.category": applySort("category"); break
       case "sort.notes": applySort("notes"); break
       case "notes.edit": startNotes(); break
+      case "detail.open": if (!detailOpen) toggleDetail(); zone = "detail"; break
       case "sidebar.toggle":
         sidebarOpen = !sidebarOpen
         if (!sidebarOpen && zone === "sidebar") zone = "table"
