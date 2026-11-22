@@ -198,6 +198,10 @@ def sync_accounts(conn, today: str):
 
     log.info(f"  {len(accts)} plaid accounts, {len(assets)} manual assets.")
 
+    # Account ids we have never stored: their full history is backfilled by run_sync.
+    known = {r[0] for r in conn.execute("SELECT id FROM accounts")}
+    new_ids = [a["id"] for a in accts + assets if a["id"] not in known]
+
     upserted = 0
     balances_recorded = 0
 
@@ -324,7 +328,7 @@ def sync_accounts(conn, today: str):
 
     conn.commit()
     log.info(f"  Accounts upserted: {upserted}, balance snapshots: {balances_recorded}")
-    return len(accts) + len(assets), upserted, balances_recorded
+    return len(accts) + len(assets), upserted, balances_recorded, new_ids
 
 
 # ---------------------------------------------------------------------------
@@ -346,10 +350,12 @@ def get_last_sync_date(conn) -> str | None:
     return row[0] if row else None
 
 
-def sync_transactions(conn, start_date: str, end_date: str):
+def sync_transactions(conn, start_date: str, end_date: str, only_accounts=None):
     """
     Fetch all transactions between start_date and end_date (inclusive),
     paginating through results.  Upserts on conflict so re-runs are safe.
+    If only_accounts (a set of account ids) is given, rows from any other
+    account are skipped, so a wide backfill never rewrites existing rows.
     """
     log.info(f"Fetching transactions {start_date} → {end_date}…")
 
@@ -370,6 +376,9 @@ def sync_transactions(conn, start_date: str, end_date: str):
         has_more = data.get("has_more", False)
 
         for t in txns:
+            if only_accounts is not None and (t.get("plaid_account_id") not in only_accounts
+                                              and t.get("manual_account_id") not in only_accounts):
+                continue
             # Check whether we've seen this id before (to distinguish insert vs update)
             existing = conn.execute(
                 "SELECT id FROM transactions WHERE id = ?", (t["id"],)
@@ -503,10 +512,19 @@ def run_sync():
         cats_fetched, cats_upserted = sync_categories(conn)
 
         # 2. Accounts + balance snapshots
-        accts_fetched, accts_upserted, balances = sync_accounts(conn, today)
+        accts_fetched, accts_upserted, balances, new_ids = sync_accounts(conn, today)
 
         # 3. Transactions
         tx_fetched, tx_inserted, tx_updated = sync_transactions(conn, start_date, today)
+
+        # 3b. Accounts new to the database: take everything Lunch Money has for them.
+        # (On the first-ever run every account is new and the window above already covers it.)
+        if new_ids and last_sync:
+            log.info(f"New account id(s) {new_ids}: backfilling full history from 2019-01-01")
+            f, i, u = sync_transactions(conn, "2019-01-01", today, only_accounts=set(new_ids))
+            tx_fetched += f
+            tx_inserted += i
+            tx_updated += u
 
         # 4. Mark success
         conn.execute(
