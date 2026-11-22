@@ -7,6 +7,8 @@
 //! - `rule` / `row`: the full `rule` row.
 //! - `saved_view` / `row`: `{name, query, sort, position}` (see `views.rs`).
 //! - `transaction` / `category_local_id`: the local category id, or JSON `null`.
+//! - `transaction_notes` / `user_notes`: the note text as a JSON string, or JSON `null`.
+//! - `account_nickname` / `nickname`: the account nickname as a JSON string, or JSON `null`.
 //!
 //! Stack model: undo reverses the newest batch with `undone_at IS NULL`. Redo re-applies the most recently
 //! undone batch, which is the lowest id among undone, non-superseded batches (undo always works down from the
@@ -147,6 +149,17 @@ pub fn read_state(c: &Connection, entity: &str, id: i64) -> Result<Option<Value>
                 .optional()?;
             Ok(v.map(|x| json!(x)))
         }
+        "transaction_notes" => {
+            let v: Option<Option<String>> = c
+                .query_row("SELECT user_notes FROM transactions WHERE id=?1", [id], |r| r.get(0))
+                .optional()?;
+            Ok(v.map(|x| json!(x)))
+        }
+        "account_nickname" => {
+            let v: Option<Option<String>> =
+                c.query_row("SELECT nickname FROM accounts WHERE id=?1", [id], |r| r.get(0)).optional()?;
+            Ok(v.map(|x| json!(x)))
+        }
         other => bail!("unknown journal entity {other}"),
     }
 }
@@ -162,6 +175,22 @@ pub fn apply(c: &Connection, entity: &str, id: i64, v: Option<&Value>) -> Result
             let n = c.execute("UPDATE transactions SET category_local_id=?1 WHERE id=?2", params![v.as_i64(), id])?;
             if n != 1 {
                 bail!("transaction {id} is missing");
+            }
+            Ok(())
+        }
+        "transaction_notes" => {
+            let Some(v) = v else { bail!("transaction rows cannot be absent") };
+            let n = c.execute("UPDATE transactions SET user_notes=?1 WHERE id=?2", params![v.as_str(), id])?;
+            if n != 1 {
+                bail!("transaction {id} is missing");
+            }
+            Ok(())
+        }
+        "account_nickname" => {
+            let Some(v) = v else { bail!("account rows cannot be absent") };
+            let n = c.execute("UPDATE accounts SET nickname=?1 WHERE id=?2", params![v.as_str(), id])?;
+            if n != 1 {
+                bail!("account {id} is missing");
             }
             Ok(())
         }

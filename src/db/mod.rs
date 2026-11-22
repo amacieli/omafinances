@@ -1,8 +1,10 @@
 //! Encrypted (SQLCipher) database access. One `Mutex<Connection>`: key derivation is slow, so we
 //! open once. Journal mode is left alone (the file lives on NFS; no WAL).
+pub mod accounts;
 pub mod categories;
 pub mod journal;
 pub mod migrations;
+pub mod notes;
 pub mod reports;
 pub mod rules;
 pub mod views;
@@ -146,7 +148,7 @@ impl Db {
         let local_expr = if has_local { "t.category_local_id" } else { "NULL" };
         let sql = format!(
             "SELECT t.id, t.date, COALESCE(t.payee,''), t.amount, COALESCE(t.currency,''),
-                    COALESCE(NULLIF(a.display_name,''), a.name, NULLIF(m.display_name,''), m.name),
+                    COALESCE(NULLIF(a.nickname,''), NULLIF(a.display_name,''), a.name, NULLIF(m.nickname,''), NULLIF(m.display_name,''), m.name),
                     {local_expr}, c.name
              FROM transactions t
              LEFT JOIN accounts a ON a.id = t.plaid_account_id
@@ -192,6 +194,8 @@ pub struct RawTxn {
     pub payee: Option<String>,
     pub original_name: Option<String>,
     pub notes: Option<String>,
+    /// The user's own note (`user_notes`); `None` when unset or the column does not exist yet.
+    pub user_notes: Option<String>,
     pub amount: f64,
     pub currency: Option<String>,
     pub status: Option<String>,
@@ -214,6 +218,8 @@ pub struct RawAccount {
     pub id: i64,
     pub name: String,
     pub display_name: Option<String>,
+    /// User-editable nickname (migration v5); preferred over `display_name` for display.
+    pub nickname: Option<String>,
     pub kind: Option<String>,
     pub institution: Option<String>,
     pub mask: Option<String>,
@@ -245,6 +251,12 @@ impl Db {
         if !migrations::column_exists(&conn, "transactions", "category_local_id")? {
             bail!("database is not migrated (no category_local_id column)");
         }
+        if !migrations::column_exists(&conn, "transactions", "user_notes")? {
+            bail!("database is not migrated (no user_notes column)");
+        }
+        if !migrations::column_exists(&conn, "accounts", "nickname")? {
+            bail!("database is not migrated (no accounts.nickname column)");
+        }
         let mut snap = Snapshot::default();
 
         if migrations::table_exists(&conn, "category")? {
@@ -256,7 +268,7 @@ impl Db {
                 .collect::<rusqlite::Result<_>>()?;
         }
 
-        let mut s = conn.prepare("SELECT id, name, display_name, type, institution_name, mask, currency FROM accounts")?;
+        let mut s = conn.prepare("SELECT id, name, display_name, type, institution_name, mask, currency, nickname FROM accounts")?;
         snap.accounts = s
             .query_map([], |r| {
                 Ok(RawAccount {
@@ -267,6 +279,7 @@ impl Db {
                     institution: r.get(4)?,
                     mask: r.get(5)?,
                     currency: r.get(6)?,
+                    nickname: r.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -284,7 +297,8 @@ impl Db {
                     t.tag_ids, t.recurring_id, t.external_id, t.created_at_lm, t.updated_at_lm, t.is_pending,
                     t.category_id, t.category_local_id, c.name,
                     COALESCE(a.id, m.id),
-                    COALESCE(NULLIF(a.display_name,''), a.name, NULLIF(m.display_name,''), m.name)
+                    COALESCE(NULLIF(a.nickname,''), NULLIF(a.display_name,''), a.name, NULLIF(m.nickname,''), NULLIF(m.display_name,''), m.name),
+                    t.user_notes
              FROM transactions t
              LEFT JOIN accounts a ON a.id = t.plaid_account_id
              LEFT JOIN accounts m ON m.id = t.manual_account_id
@@ -314,6 +328,7 @@ impl Db {
                     lm_category: r.get(17)?,
                     account_id: r.get(18)?,
                     account: r.get(19)?,
+                    user_notes: r.get(20)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;

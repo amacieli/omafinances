@@ -28,10 +28,11 @@ pub enum SortKey {
     Payee,
     Account,
     Category,
+    Notes,
 }
 
 impl SortKey {
-    pub const ALL: [SortKey; 5] = [SortKey::Date, SortKey::Amount, SortKey::Payee, SortKey::Account, SortKey::Category];
+    pub const ALL: [SortKey; 6] = [SortKey::Date, SortKey::Amount, SortKey::Payee, SortKey::Account, SortKey::Category, SortKey::Notes];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -40,6 +41,7 @@ impl SortKey {
             SortKey::Payee => "payee",
             SortKey::Account => "account",
             SortKey::Category => "category",
+            SortKey::Notes => "notes",
         }
     }
 
@@ -55,6 +57,7 @@ impl SortKey {
             SortKey::Payee => Sort::Payee,
             SortKey::Account => Sort::Account,
             SortKey::Category => Sort::Category,
+            SortKey::Notes => Sort::Notes,
         }
     }
 }
@@ -84,7 +87,7 @@ pub struct Term {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TermKind {
-    /// Bare word or quoted phrase (lowercased): substring over payee, original name and notes.
+    /// Bare word or quoted phrase (lowercased): substring over payee, original name and notes (Lunch Money's and the user's).
     Text(String),
     /// Every list is an OR over its items (lowercased substrings, ids, ...).
     Payee(Vec<String>),

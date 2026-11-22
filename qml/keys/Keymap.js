@@ -19,6 +19,7 @@ var SCOPE_TITLES = {
   search: "Slash search bar (focus: the / bar; typing is a search)",
   picker: "Pickers: filter menu, sort, sub-pickers",
   prompt: "Typed input (amount, dates, text)",
+  notes: "Note dialog (Enter or e on a transaction)",
   manager: "Category manager (m; keys work inside the overlay)",
   smart: "Categorize with preview (C; keys work inside the overlay)",
   dash: "Dashboard and insights (D; keys work inside the overlay)",
@@ -30,24 +31,25 @@ var SCOPE_TITLES = {
   help: "This help"
 }
 
-var SCOPE_ORDER = ["global", "table", "manager", "smart", "dash", "review", "reports", "reportsEdit", "reportsView", "reportsConfirm", "sidebar", "detail", "search", "picker", "prompt", "help"]
+var SCOPE_ORDER = ["global", "table", "manager", "smart", "dash", "review", "reports", "reportsEdit", "reportsView", "reportsConfirm", "sidebar", "detail", "search", "picker", "prompt", "notes", "help"]
 
 var BINDINGS = [
   // ---- anywhere
   { id: "help", scope: "global", keys: ["?"], label: "Keyboard help" },
-  { id: "filter.menu", scope: "global", keys: ["f"], label: "Filter menu: account, category, date, amount, money, text" },
+  { id: "filter.menu", scope: "global", keys: ["f"], label: "Filter menu: account, category, date, amount, money, text, notes" },
   { id: "sort.menu", scope: "global", keys: ["s"], label: "Sort picker (choosing the current column reverses it)" },
   { id: "sort.date", scope: "global", keys: ["1"], label: "Sort by date (again: reverse)" },
   { id: "sort.amount", scope: "global", keys: ["2"], label: "Sort by amount (again: reverse)" },
   { id: "sort.payee", scope: "global", keys: ["3"], label: "Sort by payee (again: reverse)" },
   { id: "sort.account", scope: "global", keys: ["4"], label: "Sort by account (again: reverse)" },
   { id: "sort.category", scope: "global", keys: ["5"], label: "Sort by category (again: reverse)" },
+  { id: "sort.notes", scope: "global", keys: ["6"], label: "Sort by notes (again: reverse)" },
   { id: "sidebar.toggle", scope: "global", keys: ["b"], label: "Show or hide the sidebar" },
   { id: "focus.next", scope: "global", keys: ["Tab"], label: "Focus next pane: sidebar, table, detail" },
   { id: "focus.prev", scope: "global", keys: ["S-Tab"], label: "Focus previous pane" },
   { id: "pane.left", scope: "global", keys: ["Left"], label: "Move focus to the pane on the left (sidebar; opens it if hidden)" },
   { id: "pane.right", scope: "global", keys: ["Right"], label: "Move focus to the pane on the right (table, then detail)" },
-  { id: "detail.toggle", scope: "global", keys: ["i", "Enter"], label: "Show or hide the detail pane" },
+  { id: "detail.toggle", scope: "global", keys: ["i"], label: "Show or hide the detail pane" },
   { id: "filter.clearAll", scope: "global", keys: ["x"], label: "Clear all filters" },
   { id: "filter.clearLast", scope: "global", keys: ["X"], label: "Clear the newest filter chip" },
   { id: "reload", scope: "global", keys: ["r"], label: "Refresh from Lunch Money, then reload" },
@@ -73,8 +75,9 @@ var BINDINGS = [
   { id: "mark.toggle", scope: "table", keys: ["Space"], label: "Mark or unmark this row, then move down" },
   { id: "visual.toggle", scope: "table", keys: ["V"], label: "Visual range: start here; j/k extend it; V again ends it, keeping the marks" },
   { id: "mark.all", scope: "table", keys: ["C-a"], label: "Mark every row that matches the filters (loads all pages; cap 5000)" },
-  { id: "marks.clear", scope: "table", keys: ["Esc"], label: "Esc: end visual mode (keeps marks); then clear the marks; with nothing marked, quit" },
+  { id: "marks.clear", scope: "table", keys: ["Esc"], label: "Esc: end visual mode (keeps marks); then clear the marks" },
   { id: "categorize", scope: "table", keys: ["c"], label: "Categorize the marked rows, or this row (category picker)" },
+  { id: "notes.edit", scope: "table", keys: ["Enter", "e"], label: "Open the note dialog for the marked rows, or this row (prefilled; empty removes the note; u undoes)" },
   { id: "categorizeSmart", scope: "table", keys: ["C"], label: "Categorize with preview: pick a category, then review clusters before anything is written" },
 
   // ---- category manager (full-pane overlay; AppShell runs the actions)
@@ -176,7 +179,7 @@ var BINDINGS = [
   { id: "detail.up", scope: "detail", keys: ["k", "Up"], label: "Scroll up" },
   { id: "detail.pagedown", scope: "detail", keys: ["PgDown"], label: "Scroll down a page" },
   { id: "detail.pageup", scope: "detail", keys: ["PgUp"], label: "Scroll up a page" },
-  { id: "detail.close", scope: "detail", keys: ["i", "Enter"], label: "Close the detail pane" },
+  { id: "detail.close", scope: "detail", keys: ["i"], label: "Close the detail pane" },
   { id: "focus.table", scope: "detail", keys: ["Esc"], label: "Back to the table" },
 
   // ---- slash search bar (typing goes to the bar; these are the keys it answers to)
@@ -199,6 +202,11 @@ var BINDINGS = [
   // ---- typed inputs (amount, date range, text)
   { id: "prompt.submit", scope: "prompt", keys: ["Enter"], label: "Apply (empty clears; a bad value is shown inline)" },
   { id: "prompt.cancel", scope: "prompt", keys: ["Esc"], label: "Cancel" },
+
+  // ---- note dialog (typing goes to the field; these are the keys it answers to)
+  { id: "notes.submit", scope: "notes", keys: ["Enter"], label: "Save the note (empty removes it; a bad one is shown inline)" },
+  { id: "notes.cancel", scope: "notes", keys: ["Esc"], label: "Cancel without saving" },
+  { id: "notes.clear", scope: "notes", keys: ["C-u"], label: "Clear the field" },
 
   // ---- help overlay
   { id: "help.close", scope: "help", keys: ["Esc", "q", "?"], label: "Close" },

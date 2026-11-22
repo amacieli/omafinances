@@ -66,6 +66,9 @@ FocusScope {
   // The one place table filters live. Query.buildQuery() is the only converter to a query string.
   property var filter: Query.emptyFilter()
   property var sort: ({ key: "date", dir: "desc" })
+  // The last direction each column was sorted in. Keys 1-5 and the sort picker toggle that
+  // column between its own ascending and descending order, so a column never lands in a third state.
+  property var sortMemory: Query.defaultSortMemory()
 
   // ------------------------------------------------------------------ panes
   // Keyboard focus: "sidebar" | "table" | "detail". Tab cycles the visible panes.
@@ -183,7 +186,7 @@ FocusScope {
   ListModel { id: rows }
   ListModel { id: sideRows }
 
-  readonly property bool overlayOpen: picker.open || prompt.open || help.open || searchBar.open || managerOpen || smartOpen || dashOpen || reviewOpen || reportsOpen
+  readonly property bool overlayOpen: picker.open || prompt.open || notesDlg.open || help.open || searchBar.open || managerOpen || smartOpen || dashOpen || reviewOpen || reportsOpen
 
   // ------------------------------------------------------------------ helpers
   function parseJson(text) {
@@ -432,6 +435,7 @@ FocusScope {
           category: r.category ? String(r.category) : "",
           pending: !!r.pending,
           recurring: !!r.recurring,
+          notes: r.notes ? String(r.notes) : "",
           marked: !!markedSet[String(Number(r.id) || 0)]
         })
       }
@@ -545,7 +549,8 @@ FocusScope {
   }
 
   function applySort(key) {
-    sort = Query.nextSort(sort, key)
+    sort = Query.nextSort(sort, key, sortMemory)
+    sortMemory = Query.rememberSort(sortMemory, sort)
     reloadRows(0)
   }
 
@@ -563,6 +568,7 @@ FocusScope {
       { key: "amount", label: "Amount", detail: f.amountLabel || "any" },
       { key: "flow", label: "Money out / in / all", detail: f.flow === "out" ? "money out" : (f.flow === "in" ? "money in" : "all") },
       { key: "text", label: "Text contains", detail: f.text ? "\"" + f.text + "\"" : "any" },
+      { key: "notes", label: "Notes", detail: f.notes ? (f.notes === "*" ? "has a note" : "\"" + f.notes + "\"") : "any" },
       { key: "clear", label: "Clear all filters", detail: Query.isActive(f) ? "" : "none set" }
     ]
     picker.show()
@@ -666,6 +672,12 @@ FocusScope {
       prompt.placeholder = "e.g. coffee"
       prompt.validator = function(t) { var r = Query.parseText(t); return r.error || "" }
       prompt.show(filter.text)
+    } else if (ctx === "notesFilter") {
+      prompt.title = "Notes filter"
+      prompt.hint = "Text a note contains, or * for rows that have a note. Empty clears it."
+      prompt.placeholder = "e.g. vacation, or *"
+      prompt.validator = function(t) { var r = Query.parseNotesFilter(t); return r.error || "" }
+      prompt.show(filter.notes)
     } else {
       prompt.title = "Custom date range"
       prompt.hint = "YYYY-MM-DD..YYYY-MM-DD, or one day as YYYY-MM-DD. Both ends are included."
@@ -695,6 +707,9 @@ FocusScope {
     } else if (promptCtx === "text") {
       var t = Query.parseText(text)
       f.text = t.clear ? "" : t.text
+    } else if (promptCtx === "notesFilter") {
+      var nf = Query.parseNotesFilter(text)
+      f.notes = nf.clear ? "" : nf.notes
     } else {
       var d = Query.parseDateRange(text)
       f.from = d.clear ? "" : d.from
@@ -722,6 +737,7 @@ FocusScope {
       else if (key === "amount") openPrompt("amount")
       else if (key === "flow") openFlowPicker()
       else if (key === "text") openPrompt("text")
+      else if (key === "notes") openPrompt("notesFilter")
       else if (key === "clear") clearAll()
     } else if (ctx === "account") {
       f = Object.assign({}, filter)
@@ -781,12 +797,12 @@ FocusScope {
   // text field after onOpenChanged runs, which would otherwise take focus away again. Skipped if
   // another overlay reopened in the meantime (a sub-picker, for example).
   function restoreFocus() {
-    if (picker.open || prompt.open || help.open || searchBar.open) return
+    if (picker.open || prompt.open || notesDlg.open || help.open || searchBar.open) return
     // An overlay's text field keeps the window's active focus after the overlay is hidden, so keys
     // would go to an invisible field. Drop it explicitly, then take focus back.
     var a = root.Window.activeFocusItem
     if (a && a !== root) a.focus = false
-    picker.focus = false; prompt.focus = false; help.focus = false
+    picker.focus = false; prompt.focus = false; notesDlg.focus = false; help.focus = false
     searchBar.field.focus = false
     if (smartOpen) { smart.focusKeys(); return }
     if (reportsOpen) { reportsView.focusKeys(); return }
@@ -926,11 +942,10 @@ FocusScope {
     moveRow(1)
   }
 
-  // Esc in the table: end visual mode, else clear the marks, else quit (only with nothing marked).
+  // Esc in the table: end visual mode, else clear the marks. Esc never quits; q does.
   function escapeTable() {
     if (visualOn) { endVisual(); return }
     if (markCount > 0) { marks = ({}); refreshMarks(); return }
-    root.closeRequested()
   }
 
   // C-a: mark every row that matches the filters. Pages load until every matching row (up to the
@@ -969,6 +984,61 @@ FocusScope {
     smartFlow = !!withPreview
     reviewPickFlow = false
     openCategorize()
+  }
+
+  // ------------------------------------------------------------------ notes (e)
+  // Target: the marked rows, else the cursor row. One row prefills its current note.
+  property var noteIds: []
+
+  function startNotes() {
+    var list = Marks.effectiveIds(loadedIds(), marks, visualOn, visualAnchor, cursor)
+    var initial = ""
+    if (list.length === 0) {
+      var id = currentTxid()
+      if (id < 0) { toast("no transaction under the cursor"); return }
+      list = [id]
+    }
+    noteGen++
+    noteIds = list
+    if (list.length === 1) {
+      var i = indexOfTxid(list[0])
+      var r = i >= 0 ? rows.get(i) : null
+      if (r) initial = String(r.notes || "")
+      notesDlg.title = "Transaction note"
+      notesDlg.payee = r ? (r.payee || "(no payee)") : ""
+      notesDlg.detail = r ? [r.date, Query.fmtAmountRow(r.amount, r.currency), r.account,
+                             r.category].filter(function(x) { return !!x }).join("   \u00b7   ") : ""
+      notesDlg.footnote = ""
+    } else {
+      notesDlg.title = "Note for " + Query.fmtCount(list.length) + " transactions"
+      notesDlg.payee = ""
+      notesDlg.detail = ""
+      notesDlg.footnote = "This replaces the note on every marked row. Empty removes their notes."
+    }
+    notesDlg.show(initial)
+  }
+
+  property int noteGen: 0
+
+  function saveNotes(text) {
+    var p = Query.parseNote(text)
+    if (p.error) { notesDlg.fail(p.error); return }
+    var gen = noteGen
+    var ids = noteIds
+    var value = p.clear ? null : p.note
+    notesDlg.busy = true
+    var done = function(xhr) {
+      var j = xhr.status === 200 ? parseJson(xhr.responseText) : null
+      if (gen !== noteGen || !notesDlg.open) return
+      if (!j) { notesDlg.fail(xhrMessage(xhr)); return }
+      notesDlg.close()
+      toast(String(j.label || "note saved") + "   u to undo")
+      if (ids.length > 1) { marks = ({}); visualOn = false; visualAnchor = -1; refreshMarks() }
+      afterChange()
+      loadDetail()
+    }
+    if (ids.length === 1) Backend.json("PUT", "/transactions/" + ids[0] + "/notes", { notes: value }, done)
+    else Backend.json("POST", "/transactions/notes", { ids: ids, notes: value }, done)
   }
 
   function openCategorize() {
@@ -1329,7 +1399,8 @@ FocusScope {
   // a: child of the cursor node (top level on an empty tree). A: sibling after the cursor node.
   function mgrOpenAdd(sibling) {
     var cur = mgrNode()
-    mgrPendingParent = cur ? Tree.pidOf(cur) : null
+    // A child goes under the cursor node; a sibling goes beside it, under the cursor's parent.
+    mgrPendingParent = cur ? (sibling ? Tree.pidOf(cur) : Number(cur.id)) : null
     mgrPendingAfter = sibling && cur ? Tree.siblingIndex(categoryList, cur.id) : -1
     var where = cur ? (sibling ? "After '" : "Under '") + cur.name + "'." : "Top level."
     openMgrPrompt(sibling ? "mgrSibling" : "mgrAdd", sibling ? "Add a sibling" : "Add a child",
@@ -1547,7 +1618,10 @@ FocusScope {
   function applySlash(canonical, sortObj) {
     var sortChanged = sortObj !== null && sortObj !== undefined
                       && (sortObj.key !== sort.key || sortObj.dir !== sort.dir)
-    if (sortChanged) sort = { key: sortObj.key, dir: sortObj.dir }
+    if (sortChanged) {
+      sort = { key: sortObj.key, dir: sortObj.dir }
+      sortMemory = Query.rememberSort(sortMemory, sort)
+    }
     if (canonical === filter.slash && !sortChanged) return
     var f = Object.assign({}, filter)
     f.slash = canonical
@@ -2356,6 +2430,8 @@ FocusScope {
       case "sort.payee": applySort("payee"); break
       case "sort.account": applySort("account"); break
       case "sort.category": applySort("category"); break
+      case "sort.notes": applySort("notes"); break
+      case "notes.edit": startNotes(); break
       case "sidebar.toggle":
         sidebarOpen = !sidebarOpen
         if (!sidebarOpen && zone === "sidebar") zone = "table"
@@ -2702,6 +2778,14 @@ FocusScope {
     anchors.fill: parent
     onSubmitted: function(text) { root.onPromptSubmitted(text) }
     onCancelled: root.onPromptCancelled()
+    onOpenChanged: if (!open) Qt.callLater(root.restoreFocus)
+  }
+
+  NotesDialog {
+    id: notesDlg
+    anchors.fill: parent
+    onSubmitted: function(text) { root.saveNotes(text) }
+    onCancelled: root.noteGen++
     onOpenChanged: if (!open) Qt.callLater(root.restoreFocus)
   }
 

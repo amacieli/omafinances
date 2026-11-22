@@ -56,7 +56,7 @@ fn migrate_backup_seed_status_txns() {
     assert_eq!(db.status().unwrap().categories, 0);
 
     let rep = db.migrate().unwrap();
-    assert_eq!((rep.from, rep.to), (0, 3));
+    assert_eq!((rep.from, rep.to), (0, 5));
     let b = rep.backup.expect("backup");
     assert_eq!(std::fs::metadata(&b).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(std::fs::metadata(b.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
@@ -64,12 +64,12 @@ fn migrate_backup_seed_status_txns() {
     // backup stays encrypted: opens with key, not without
     assert!(Db::open(&b, "bad").is_err());
     assert!(Db::open(&b, PASS).is_ok());
-    assert_eq!(count(&db, "PRAGMA user_version"), 3);
+    assert_eq!(count(&db, "PRAGMA user_version"), 5);
 
     // idempotent
     let n_cat = count(&db, "SELECT count(*) FROM category");
     let rep2 = db.migrate().unwrap();
-    assert_eq!((rep2.from, rep2.to), (3, 3));
+    assert_eq!((rep2.from, rep2.to), (5, 5));
     assert!(rep2.backup.is_none());
     assert_eq!(std::fs::read_dir(dir.join("backups")).unwrap().count(), 1);
     assert_eq!(count(&db, "SELECT count(*) FROM category"), n_cat);
@@ -90,7 +90,7 @@ fn migrate_backup_seed_status_txns() {
 
     // status
     let st = db.status().unwrap();
-    assert_eq!((st.schema_version, st.transactions, st.accounts, st.categories), (3, 4, 2, 5));
+    assert_eq!((st.schema_version, st.transactions, st.accounts, st.categories), (5, 4, 2, 5));
     assert_eq!(st.last_txn_date.as_deref(), Some("2026-01-03"));
     assert_eq!(st.last_sync.as_deref(), Some("2026-01-04 10:00"));
 
@@ -127,4 +127,73 @@ fn migrate_backup_seed_status_txns() {
     assert_eq!(rows[2].payee, "Renamed");
     assert_eq!(rows[2].category.as_deref(), Some("Home › Improvement › Paint"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn migration_v4_adds_user_notes_and_is_rerunnable() {
+    let (_dir, path) = setup();
+    let db = Db::open(&path, PASS).unwrap();
+    let has = |db: &Db| count(db, "SELECT count(*) FROM pragma_table_info('transactions') WHERE name='user_notes'");
+    assert_eq!(has(&db), 0);
+    db.migrate().unwrap();
+    assert_eq!(has(&db), 1);
+    assert_eq!(count(&db, "PRAGMA user_version"), 5);
+    assert_eq!(count(&db, "SELECT count(*) FROM transactions WHERE user_notes IS NOT NULL"), 0);
+    // the declared type is CHAR(255), nullable
+    let (ty, notnull): (String, i64) = db
+        .conn
+        .lock()
+        .unwrap()
+        .query_row("SELECT type, \"notnull\" FROM pragma_table_info('transactions') WHERE name='user_notes'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap();
+    assert_eq!((ty.as_str(), notnull), ("CHAR(255)", 0));
+    // forcing the version back and migrating again must not fail on the existing column or lose data
+    db.conn.lock().unwrap().execute_batch("UPDATE transactions SET user_notes='keep' WHERE id=1; PRAGMA user_version=3;").unwrap();
+    let rep = db.migrate().unwrap();
+    assert_eq!((rep.from, rep.to), (3, 5));
+    assert_eq!(has(&db), 1);
+    assert_eq!(count(&db, "SELECT count(*) FROM transactions WHERE user_notes='keep'"), 1);
+    assert_eq!(db.migrate().unwrap().to, 5);
+    // no triggers were added by the migration
+    assert_eq!(count(&db, "SELECT count(*) FROM sqlite_master WHERE type='trigger'"), 0);
+}
+
+#[test]
+fn migration_v5_adds_account_nickname_and_is_rerunnable() {
+    let (_dir, path) = setup();
+    let db = Db::open(&path, PASS).unwrap();
+    let has = |db: &Db| count(db, "SELECT count(*) FROM pragma_table_info('accounts') WHERE name='nickname'");
+    assert_eq!(has(&db), 0);
+    db.migrate().unwrap();
+    assert_eq!(has(&db), 1);
+    assert_eq!(count(&db, "PRAGMA user_version"), 5);
+    assert_eq!(count(&db, "SELECT count(*) FROM accounts WHERE nickname IS NOT NULL"), 0);
+    // forcing the version back and migrating again must not fail on the existing column or lose data
+    db.conn.lock().unwrap().execute_batch("UPDATE accounts SET nickname='keep' WHERE id=1; PRAGMA user_version=4;").unwrap();
+    let rep = db.migrate().unwrap();
+    assert_eq!((rep.from, rep.to), (4, 5));
+    assert_eq!(has(&db), 1);
+    assert_eq!(count(&db, "SELECT count(*) FROM accounts WHERE nickname='keep'"), 1);
+    assert_eq!(db.migrate().unwrap().to, 5);
+    assert_eq!(count(&db, "SELECT count(*) FROM sqlite_master WHERE type='trigger'"), 0);
+}
+
+#[test]
+fn account_display_name_prefers_nickname_then_display_name_then_name() {
+    let (_dir, path) = setup();
+    let db = Db::open(&path, PASS).unwrap();
+    db.migrate().unwrap();
+    // account 1: display 'Checking', no nickname yet; account 2: 'Manual Cash', no display name
+    let shown = |db: &Db| -> (String, String) {
+        let (_, rows) = db.transactions(100, 0).unwrap();
+        let name = |id: i64| rows.iter().find(|r| r.id == id).unwrap().account.clone().unwrap();
+        (name(1), name(2))
+    };
+    assert_eq!(shown(&db), ("Checking".to_string(), "Manual Cash".to_string()));
+    db.set_account_nickname(1, Some("Everyday")).unwrap();
+    db.set_account_nickname(2, Some("Pocket")).unwrap();
+    assert_eq!(shown(&db), ("Everyday".to_string(), "Pocket".to_string()));
+    db.set_account_nickname(1, None).unwrap();
+    db.set_account_nickname(2, None).unwrap();
+    assert_eq!(shown(&db), ("Checking".to_string(), "Manual Cash".to_string()));
 }

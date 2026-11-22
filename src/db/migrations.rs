@@ -12,6 +12,8 @@ pub const MIGRATIONS: &[(i64, &str, MigrationFn)] = &[
     (1, "category tree, journal, rules, views", v1),
     (2, "undo/redo: superseded flag on change_batch", v2),
     (3, "reports: saved reports and run log", v3),
+    (4, "transactions.user_notes: user-editable note", v4),
+    (5, "accounts.nickname: user-editable account nickname", v5),
 ];
 
 pub fn latest_version() -> i64 {
@@ -130,6 +132,22 @@ fn v3(tx: &Transaction) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_report_run_report ON report_run(report_id, id);",
     )?;
+    Ok(())
+}
+
+/// User-editable per-transaction note (the Lunch Money `notes` column is separate and read-only to us).
+fn v4(tx: &Transaction) -> Result<()> {
+    if !column_exists(tx, "transactions", "user_notes")? {
+        tx.execute_batch("ALTER TABLE transactions ADD COLUMN user_notes CHAR(255);")?;
+    }
+    Ok(())
+}
+
+/// User-editable account nickname. The sync writes `accounts` with an explicit column list, so it keeps this column.
+fn v5(tx: &Transaction) -> Result<()> {
+    if !column_exists(tx, "accounts", "nickname")? {
+        tx.execute_batch("ALTER TABLE accounts ADD COLUMN nickname TEXT;")?;
+    }
     Ok(())
 }
 

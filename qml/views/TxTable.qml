@@ -44,6 +44,7 @@ Item {
   readonly property real colAmount: cw * 13
   readonly property real colAccount: cw * 16
   readonly property real colCategory: cw * 24
+  readonly property real colNotes: cw * 26
 
   function arrowFor(key) {
     return key === sortKey ? (sortDir === "asc" ? "  \u2191" : "  \u2193") : ""
@@ -76,6 +77,7 @@ Item {
     ColTitle { Layout.preferredWidth: root.colAmount; Layout.maximumWidth: root.colAmount; horizontalAlignment: Text.AlignRight; key: "amount"; label: "AMOUNT" }
     ColTitle { Layout.preferredWidth: root.colAccount; Layout.maximumWidth: root.colAccount; Layout.leftMargin: root.gapWide; key: "account"; label: "ACCOUNT" }
     ColTitle { Layout.preferredWidth: root.colCategory; Layout.maximumWidth: root.colCategory; key: "category"; label: "CATEGORY" }
+    ColTitle { Layout.preferredWidth: root.colNotes; Layout.maximumWidth: root.colNotes; key: "notes"; label: "NOTES" }
   }
 
   Rectangle {
@@ -117,6 +119,7 @@ Item {
       required property string category
       required property bool pending
       required property bool recurring
+      required property string notes
       required property bool marked
 
       readonly property bool selected: index === root.currentIndex && root.focusedPane
@@ -245,6 +248,16 @@ Item {
             font.family: Style.font.family
             font.pixelSize: Style.font.body
           }
+        }
+        // The user's note, cut with an ellipsis; the full text is in the detail pane and the `e` prompt.
+        Text {
+          Layout.preferredWidth: root.colNotes
+          Layout.maximumWidth: root.colNotes
+          text: rowItem.notes
+          color: Commons.Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
         }
       }
     }

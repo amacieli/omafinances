@@ -203,7 +203,7 @@ Rectangle {
         width: body.width
         spacing: Style.spacing.xxs
         Text {
-          text: "NOTES"
+          text: "NOTE (e edits)"
           color: Commons.Color.muted
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
@@ -212,6 +212,26 @@ Rectangle {
           width: parent.width
           wrapMode: Text.WordWrap
           text: root.txn ? String(root.txn.notes) : ""
+          color: Commons.Color.menu.text
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+        }
+      }
+
+      Column {
+        visible: root.txn !== null && !!root.txn.lm_notes
+        width: body.width
+        spacing: Style.spacing.xxs
+        Text {
+          text: "LUNCH MONEY NOTES"
+          color: Commons.Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+        Text {
+          width: parent.width
+          wrapMode: Text.WordWrap
+          text: root.txn ? String(root.txn.lm_notes) : ""
           color: Commons.Color.menu.text
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall

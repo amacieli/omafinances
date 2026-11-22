@@ -24,6 +24,8 @@ pub struct Txn {
     pub payee: String,
     pub original_name: Option<String>,
     pub notes: Option<String>,
+    /// The user's own note; `None` when empty.
+    pub user_notes: Option<String>,
     pub amount: f64,
     /// Empty string when the currency is NULL.
     pub currency: String,
@@ -49,6 +51,7 @@ pub struct Txn {
     pub payee_lc: String,
     pub original_lc: String,
     pub notes_lc: String,
+    pub user_notes_lc: String,
     /// Lowercased account display name and Lunch Money category name ("" when absent).
     pub account_lc: String,
     pub lm_lc: String,
@@ -56,6 +59,8 @@ pub struct Txn {
     pub key_payee: u32,
     pub key_account: u32,
     pub key_category: u32,
+    /// Dense rank of the lowercased user note; 0 = no note (sorts like an empty payee/category).
+    pub key_notes: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -83,8 +88,12 @@ pub struct CatNode {
 #[derive(Debug, Clone)]
 pub struct AccountRow {
     pub id: i64,
-    /// Display name if set, else the account name.
+    /// Display name: the nickname if set, else the display name, else the account name.
     pub name: String,
+    /// The user's nickname (`None` when unset or empty).
+    pub nickname: Option<String>,
+    /// The account's own name (`accounts.name`), unchanged by nickname or display name.
+    pub formal_name: String,
     pub kind: Option<String>,
     pub institution: Option<String>,
     pub mask: Option<String>,
@@ -131,6 +140,10 @@ impl Cache {
             .iter()
             .map(|t| t.account.as_deref().map_or(0, |a| account_rank[a]))
             .collect();
+        let kn: Vec<u32> = {
+            let notes_rank = dense_ranks(txns.iter().map(|t| t.user_notes_lc.as_str()).filter(|s| !s.is_empty()));
+            txns.iter().map(|t| notes_rank.get(t.user_notes_lc.as_str()).copied().unwrap_or(0)).collect()
+        };
         let path_rank = dense_ranks(categories.iter().map(|c| c.path.as_str()));
         let kc: Vec<u32> = categories.iter().map(|c| path_rank[c.path.as_str()]).collect();
         for (c, r) in categories.iter_mut().zip(kc) {
@@ -139,6 +152,7 @@ impl Cache {
         for (i, t) in txns.iter_mut().enumerate() {
             t.key_payee = kp[i];
             t.key_account = ka[i];
+            t.key_notes = kn[i];
             t.key_category = t.cat_pos.map_or(0, |p| categories[p as usize].rank);
         }
 
@@ -206,11 +220,23 @@ impl Cache {
     }
 }
 
+/// Nickname, then display name, then account name; empty values are skipped.
+fn display_name(a: &RawAccount) -> String {
+    [a.nickname.as_deref(), a.display_name.as_deref()]
+        .into_iter()
+        .flatten()
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| a.name.clone())
+}
+
 fn account_row(a: RawAccount, by_account: &HashMap<i64, (usize, f64)>, balances: &HashMap<i64, f64>) -> AccountRow {
     let (count, sum_out) = by_account.get(&a.id).copied().unwrap_or((0, 0.0));
     AccountRow {
         id: a.id,
-        name: a.display_name.filter(|s| !s.is_empty()).unwrap_or(a.name),
+        name: display_name(&a),
+        nickname: a.nickname.clone().filter(|s| !s.is_empty()),
+        formal_name: a.name.clone(),
         kind: a.kind,
         institution: a.institution,
         mask: a.mask,
@@ -224,6 +250,7 @@ fn account_row(a: RawAccount, by_account: &HashMap<i64, (usize, f64)>, balances:
 fn convert(r: RawTxn, pos_by_id: &HashMap<i64, u32>) -> Txn {
     let cat_pos = r.category_local_id.and_then(|id| pos_by_id.get(&id).copied());
     let payee = r.payee.unwrap_or_default();
+    let user_notes = r.user_notes.filter(|s| !s.is_empty());
     let tags = r
         .tag_ids
         .as_deref()
@@ -242,6 +269,8 @@ fn convert(r: RawTxn, pos_by_id: &HashMap<i64, u32>) -> Txn {
         original_name: r.original_name,
         notes_lc: r.notes.as_deref().unwrap_or("").to_lowercase(),
         notes: r.notes,
+        user_notes_lc: user_notes.as_deref().unwrap_or("").to_lowercase(),
+        user_notes,
         account_lc: r.account.as_deref().unwrap_or("").to_lowercase(),
         lm_lc: r.lm_category.as_deref().unwrap_or("").to_lowercase(),
         amount: r.amount,
@@ -263,6 +292,7 @@ fn convert(r: RawTxn, pos_by_id: &HashMap<i64, u32>) -> Txn {
         key_payee: 0,
         key_account: 0,
         key_category: 0,
+        key_notes: 0,
     }
 }
 
@@ -366,6 +396,7 @@ pub(crate) mod testing {
                 id: a,
                 name: format!("acct {}", a),
                 display_name: if a % 2 == 0 { Some(format!("Account {}", 6 - a)) } else { None },
+                nickname: None,
                 kind: Some("depository".into()),
                 institution: Some("Bank".into()),
                 mask: Some(format!("{:04}", a)),
@@ -398,6 +429,7 @@ pub(crate) mod testing {
                 payee: Some(format!("{} {}", payee, i % 50)),
                 original_name: Some(format!("ORIG {}", i % 7)),
                 notes: if i % 3 == 0 { Some(format!("note {}", i % 11)) } else { None },
+                user_notes: if i % 4 == 0 { Some(format!("{} {}", if i % 8 == 0 { "Vacation" } else { "budget" }, i % 13)) } else { None },
                 amount: sign * cents,
                 currency: Some("USD".into()),
                 status: Some("cleared".into()),

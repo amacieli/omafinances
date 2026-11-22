@@ -41,7 +41,7 @@ const FIELD_ITEMS: &[(&str, &str, &[&str])] = &[
     ("amount:", "amount (absolute)", &["amount", "amt"]),
     ("is:", "flag: recurring, pending, income, ...", &["is"]),
     ("sort:", "sort order", &["sort"]),
-    ("n:", "notes", &["n", "note", "notes"]),
+    ("n:", "notes (n:* = has a note)", &["n", "note", "notes"]),
     ("lm:", "Lunch Money category", &["lm"]),
 ];
 

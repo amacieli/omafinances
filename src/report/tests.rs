@@ -153,7 +153,7 @@ fn migration_v3_is_rerunnable() {
     }
     let db = Db::open(&path, crate::db::tests::PASS).unwrap();
     let rep = db.migrate().unwrap();
-    assert_eq!((rep.from, rep.to), (2, 3));
+    assert_eq!((rep.from, rep.to), (2, 5));
     assert!(db.reports_list().unwrap().is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }

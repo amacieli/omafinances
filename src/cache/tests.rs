@@ -91,7 +91,7 @@ fn counts_and_sums_roll_up_the_tree() {
 fn accounts_use_display_names_balances_and_totals() {
     let snap = Snapshot {
         accounts: vec![
-            RawAccount { id: 1, name: "zeta raw".into(), display_name: None, kind: Some("credit".into()), institution: Some("Bank".into()), mask: Some("1234".into()), currency: Some("USD".into()) },
+            RawAccount { id: 1, name: "zeta raw".into(), display_name: None, kind: Some("credit".into()), institution: Some("Bank".into()), mask: Some("1234".into()), currency: Some("USD".into()), ..Default::default() },
             RawAccount { id: 2, name: "alpha raw".into(), display_name: Some("Bravo".into()), ..Default::default() },
             RawAccount { id: 3, name: "unused".into(), display_name: Some("".into()), ..Default::default() },
         ],
@@ -188,4 +188,21 @@ fn load_from_database_resolves_names_and_tree() {
     let t3 = c.txns.iter().find(|t| t.id == 3).unwrap();
     assert_eq!((t3.payee.as_str(), t3.account.as_deref()), ("", None));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn account_name_prefers_nickname_then_display_name_then_name() {
+    let snap = Snapshot {
+        accounts: vec![
+            RawAccount { id: 1, name: "raw one".into(), display_name: Some("Disp".into()), nickname: Some("Nick".into()), ..Default::default() },
+            RawAccount { id: 2, name: "raw two".into(), display_name: Some("Disp".into()), nickname: Some("".into()), ..Default::default() },
+            RawAccount { id: 3, name: "raw three".into(), display_name: Some("".into()), nickname: None, ..Default::default() },
+        ],
+        ..Default::default()
+    };
+    let c = Cache::build(snap);
+    let row = |id: i64| c.accounts.iter().find(|a| a.id == id).unwrap();
+    assert_eq!((row(1).name.as_str(), row(1).nickname.as_deref(), row(1).formal_name.as_str()), ("Nick", Some("Nick"), "raw one"));
+    assert_eq!((row(2).name.as_str(), row(2).nickname.as_deref()), ("Disp", None), "an empty nickname is no nickname");
+    assert_eq!((row(3).name.as_str(), row(3).nickname.as_deref(), row(3).formal_name.as_str()), ("raw three", None, "raw three"));
 }

@@ -235,6 +235,97 @@ pub(super) fn categorize(state: &AppState, body: &[u8]) -> Resp {
     })
 }
 
+// ---- user notes -----------------------------------------------------------------------------------
+
+/// `notes` is required and must be a string or null (empty / null clears the note).
+fn notes_value(obj: &Map<String, Value>) -> Result<Option<String>, Resp> {
+    match obj.get("notes") {
+        None => Err(invalid("notes is required (a string or null)")),
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(invalid("notes must be a string or null")),
+    }
+}
+
+/// `PUT /transactions/<id>/notes` with `{"notes": string|null}`.
+pub(super) fn notes_one(state: &AppState, id: &str, body: &[u8]) -> Resp {
+    let db = match db_of(state) {
+        Ok(d) => d,
+        Err(e) => return e,
+    };
+    let id = match path_id(id, "transaction id") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let obj = match parse_body(body) {
+        Ok(o) => o,
+        Err(e) => return e,
+    };
+    let notes = match notes_value(&obj) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    commit(state, db.set_notes(&[id], notes.as_deref()), outcome_json)
+}
+
+/// `POST /transactions/notes` with `{"ids": [int], "notes": string|null}`: one undo step for many rows.
+pub(super) fn notes_bulk(state: &AppState, body: &[u8]) -> Resp {
+    let db = match db_of(state) {
+        Ok(d) => d,
+        Err(e) => return e,
+    };
+    let obj = match parse_body(body) {
+        Ok(o) => o,
+        Err(e) => return e,
+    };
+    let ids: Vec<i64> = match obj.get("ids") {
+        Some(Value::Array(items)) => {
+            if items.len() > crate::db::notes::MAX_NOTE_IDS {
+                return invalid(&format!("at most {} transaction ids per call", crate::db::notes::MAX_NOTE_IDS));
+            }
+            let mut out = Vec::with_capacity(items.len());
+            for v in items {
+                match v.as_i64() {
+                    Some(i) => out.push(i),
+                    None => return invalid("ids must be integers"),
+                }
+            }
+            out
+        }
+        _ => return invalid("ids must be an array of integers"),
+    };
+    let notes = match notes_value(&obj) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    commit(state, db.set_notes(&ids, notes.as_deref()), outcome_json)
+}
+
+// ---- account nicknames ----------------------------------------------------------------------------
+
+/// `PUT /accounts/<id>/nickname` with `{"nickname": string|null}`. Empty or null clears the nickname.
+pub(super) fn account_nickname(state: &AppState, id: &str, body: &[u8]) -> Resp {
+    let db = match db_of(state) {
+        Ok(d) => d,
+        Err(e) => return e,
+    };
+    let id = match path_id(id, "account id") {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let obj = match parse_body(body) {
+        Ok(o) => o,
+        Err(e) => return e,
+    };
+    let nickname = match obj.get("nickname") {
+        None => return invalid("nickname is required (a string or null)"),
+        Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(_) => return invalid("nickname must be a string or null"),
+    };
+    commit(state, db.set_account_nickname(id, nickname.as_deref()), outcome_json)
+}
+
 // ---- journal --------------------------------------------------------------------------------------
 
 pub(super) fn undo(state: &AppState) -> Resp {

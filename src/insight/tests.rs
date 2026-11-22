@@ -27,6 +27,7 @@ fn tx(id: i64, date: &str, payee: &str, amount: f64, acct: i64, cat: Option<i64>
         payee: Some(payee.to_string()),
         original_name: None,
         notes: None,
+        user_notes: None,
         amount,
         currency: Some("USD".into()),
         status: None,

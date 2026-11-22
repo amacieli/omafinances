@@ -10,6 +10,7 @@
 //   amountLabel               the amount as typed, for the chip ("10..50", ">100", "<20")
 //   flow                      "out" (money out) | "in" (money in) | ""
 //   text                      contains-text
+//   notes                     notes filter: text the note contains, or "*" for any note (the n: term)
 //   slash                     the active slash query, canonical form from /search/parse ("" = none)
 
 function emptyFilter() {
@@ -20,17 +21,19 @@ function emptyFilter() {
     min: "", max: "", amountLabel: "",
     flow: "",
     text: "",
+    notes: "",
     slash: ""
   }
 }
 
-// Sort columns in the order the sort picker and keys 1-5 show them.
+// Sort columns in the order the sort picker and keys 1-6 show them.
 var SORT_KEYS = [
   { key: "date", label: "Date", dir: "desc" },
   { key: "amount", label: "Amount", dir: "desc" },
   { key: "payee", label: "Payee", dir: "asc" },
   { key: "account", label: "Account", dir: "asc" },
-  { key: "category", label: "Category", dir: "asc" }
+  { key: "category", label: "Category", dir: "asc" },
+  { key: "notes", label: "Notes", dir: "asc" }
 ]
 
 function sortInfo(key) {
@@ -38,10 +41,26 @@ function sortInfo(key) {
   return SORT_KEYS[0]
 }
 
-// Choosing a column: the current column reverses direction; any other starts at its own default.
-function nextSort(cur, key) {
+// Each column has exactly two states, ascending and descending. `memory` maps key -> the last
+// direction that column was sorted in (see defaultSortMemory). Choosing the current column
+// reverses it; choosing another column uses the direction it last had.
+function defaultSortMemory() {
+  var m = {}
+  for (var i = 0; i < SORT_KEYS.length; i++) m[SORT_KEYS[i].key] = SORT_KEYS[i].dir
+  return m
+}
+
+function nextSort(cur, key, memory) {
   if (cur && cur.key === key) return { key: key, dir: cur.dir === "asc" ? "desc" : "asc" }
-  return { key: key, dir: sortInfo(key).dir }
+  var dir = memory && (memory[key] === "asc" || memory[key] === "desc") ? memory[key] : sortInfo(key).dir
+  return { key: key, dir: dir }
+}
+
+function rememberSort(memory, sort) {
+  var m = {}
+  for (var k in memory) m[k] = memory[k]
+  m[sort.key] = sort.dir
+  return m
 }
 
 function arrow(sort) { return sort.dir === "asc" ? "\u2191" : "\u2193" }
@@ -116,6 +135,42 @@ function parseText(text) {
   return { text: t }
 }
 
+// Longest user note, in characters (the backend counts Unicode characters the same way).
+var NOTE_MAX = 255
+
+// Note being edited: trimmed, at most NOTE_MAX characters, no control characters. "" clears.
+// Returns {clear} or {note} or {error}. The backend applies the same rules.
+function parseNote(text) {
+  var t = String(text === undefined || text === null ? "" : text).trim()
+  if (t === "") return { clear: true }
+  if (Array.from(t).length > NOTE_MAX) return { error: "keep notes under " + (NOTE_MAX + 1) + " characters (" + Array.from(t).length + " typed)" }
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(t)) return { error: "notes cannot contain control characters" }
+  return { note: t }
+}
+
+// Notes filter (the n: term): text the note contains, or "*" for any note. \"\" clears.
+function parseNotesFilter(text) {
+  var t = String(text || "").replace(/\s+/g, " ").trim()
+  if (t === "") return { clear: true }
+  if (t.length > 120) return { error: "keep it under 120 characters" }
+  if (t.indexOf("\"") >= 0) return { error: "quotes cannot be used here" }
+  return { notes: t }
+}
+
+// The search-grammar term for a notes filter value: n:"vacation" or n:*. "" when unset.
+function notesTerm(v) {
+  if (!v) return ""
+  return v === "*" ? "n:*" : "n:\"" + v + "\""
+}
+
+// The slash text sent as s=: the active slash query plus the notes filter's n: term.
+function searchParam(f) {
+  var parts = []
+  if (f.slash) parts.push(f.slash)
+  if (f.notes) parts.push(notesTerm(f.notes))
+  return parts.join(" ")
+}
+
 // Filter chips in display order. Each has an id used by clearChip().
 function chips(f) {
   var out = []
@@ -126,6 +181,7 @@ function chips(f) {
   if (f.min !== "" || f.max !== "") out.push({ id: "amount", label: "amount: " + f.amountLabel })
   if (f.flow) out.push({ id: "flow", label: "money " + (f.flow === "out" ? "out" : "in") })
   if (f.text) out.push({ id: "text", label: "text: \"" + f.text + "\"" })
+  if (f.notes) out.push({ id: "notes", label: f.notes === "*" ? "has a note" : "notes: \"" + f.notes + "\"" })
   return out
 }
 
@@ -140,6 +196,7 @@ function clearChip(f, id) {
   else if (id === "amount") { n.min = ""; n.max = ""; n.amountLabel = "" }
   else if (id === "flow") n.flow = ""
   else if (id === "text") n.text = ""
+  else if (id === "notes") n.notes = ""
   else if (id === "search") n.slash = ""
   return n
 }
@@ -155,7 +212,8 @@ function buildQuery(f, sort, offset, limit) {
   if (f.max !== "") p.push("max=" + encodeURIComponent(f.max))
   if (f.flow) p.push("flow=" + encodeURIComponent(f.flow))
   if (f.text) p.push("q=" + encodeURIComponent(f.text))
-  if (f.slash) p.push("s=" + encodeURIComponent(f.slash))
+  var s = searchParam(f)
+  if (s) p.push("s=" + encodeURIComponent(s))
   p.push("limit=" + limit)
   p.push("offset=" + offset)
   return "/transactions?" + p.join("&")

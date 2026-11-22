@@ -26,6 +26,7 @@ fn t(id: i64, date: &str, payee: Option<&str>, orig: Option<&str>, notes: Option
         payee: payee.map(Into::into),
         original_name: orig.map(Into::into),
         notes: notes.map(Into::into),
+        user_notes: None,
         amount,
         currency: Some("USD".into()),
         status: Some("cleared".into()),
@@ -378,6 +379,7 @@ fn reference(c: &Cache, q: &Query) -> Vec<i64> {
             Sort::Amount => a.amount.total_cmp(&b.amount),
             Sort::Payee => a.payee.to_lowercase().cmp(&b.payee.to_lowercase()),
             Sort::Account => a.account.cmp(&b.account),
+            Sort::Notes => a.user_notes.as_deref().unwrap_or("").to_lowercase().cmp(&b.user_notes.as_deref().unwrap_or("").to_lowercase()),
             Sort::Category => {
                 let pa = c.category_path(a);
                 let pb = c.category_path(b);

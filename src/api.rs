@@ -117,6 +117,8 @@ pub fn route_name(path: &str) -> &'static str {
         Route::Categories => "categories",
         Route::CategoryAction(_, _) => "category_action",
         Route::Categorize => "categorize",
+        Route::TransactionNotes(_) | Route::NotesBulk => "notes",
+        Route::AccountNickname(_) => "account_nickname",
         Route::Undo => "undo",
         Route::Redo => "redo",
         Route::Journal => "journal",
@@ -155,6 +157,9 @@ enum Route<'a> {
     Categories,
     CategoryAction(&'a str, &'a str),
     Categorize,
+    TransactionNotes(&'a str),
+    NotesBulk,
+    AccountNickname(&'a str),
     Undo,
     Redo,
     Journal,
@@ -191,6 +196,7 @@ fn route(path: &str) -> Route<'_> {
         "/accounts" => Route::Accounts,
         "/categories" => Route::Categories,
         "/transactions/categorize" => Route::Categorize,
+        "/transactions/notes" => Route::NotesBulk,
         "/undo" => Route::Undo,
         "/redo" => Route::Redo,
         "/journal" => Route::Journal,
@@ -216,6 +222,17 @@ fn route(path: &str) -> Route<'_> {
             if let Some(rest) = path.strip_prefix("/transactions/") {
                 if !rest.is_empty() && !rest.contains('/') {
                     return Route::Transaction(rest);
+                }
+                if let Some(id) = rest.strip_suffix("/notes") {
+                    if !id.is_empty() && !id.contains('/') {
+                        return Route::TransactionNotes(id);
+                    }
+                }
+            } else if let Some(rest) = path.strip_prefix("/accounts/") {
+                if let Some(id) = rest.strip_suffix("/nickname") {
+                    if !id.is_empty() && !id.contains('/') {
+                        return Route::AccountNickname(id);
+                    }
                 }
             } else if let Some(rest) = path.strip_prefix("/categories/") {
                 if let Some((id, action)) = rest.split_once('/') {
@@ -267,7 +284,8 @@ pub fn handle_body(state: &AppState, method: &str, path: &str, query: &str, body
     let r = route(path);
     let allowed: &[&str] = match r {
         Route::Unknown => return error(404, "not found"),
-        Route::Refresh | Route::CategoryAction(_, _) | Route::Categorize | Route::Undo | Route::Redo => {
+        Route::TransactionNotes(_) | Route::AccountNickname(_) => &["PUT"],
+        Route::Refresh | Route::NotesBulk | Route::CategoryAction(_, _) | Route::Categorize | Route::Undo | Route::Redo => {
             &["POST"]
         }
         Route::SmartPreview | Route::SmartRows | Route::SmartApply | Route::Suggest => &["POST"],
@@ -298,6 +316,9 @@ pub fn handle_body(state: &AppState, method: &str, path: &str, query: &str, body
         Route::Categories => categories(state),
         Route::CategoryAction(id, action) => edit::category_action(state, id, action, body),
         Route::Categorize => edit::categorize(state, body),
+        Route::TransactionNotes(id) => edit::notes_one(state, id, body),
+        Route::NotesBulk => edit::notes_bulk(state, body),
+        Route::AccountNickname(id) => edit::account_nickname(state, id, body),
         Route::Undo => edit::undo(state),
         Route::Redo => edit::redo(state),
         Route::Journal => edit::journal(state, query),
@@ -386,6 +407,7 @@ fn txn_row(cache: &Cache, t: &Txn) -> Value {
         "lm_category": t.lm_category,
         "pending": t.pending,
         "recurring": t.recurring,
+        "notes": t.user_notes,
     })
 }
 
@@ -450,7 +472,7 @@ fn transaction(state: &AppState, id: &str) -> (u16, Value) {
     let mut body = txn_row(cache, t);
     let extra = json!({
         "original_name": t.original_name,
-        "notes": t.notes,
+        "lm_notes": t.notes,
         "status": t.status,
         "source": t.source,
         "tags": t.tags,
@@ -469,6 +491,8 @@ fn account_json(a: &AccountRow) -> Value {
     json!({
         "id": a.id,
         "name": a.name,
+        "nickname": a.nickname,
+        "formal_name": a.formal_name,
         "type": a.kind,
         "institution": a.institution,
         "mask": a.mask,

@@ -20,6 +20,7 @@ pub enum Sort {
     Payee,
     Account,
     Category,
+    Notes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,7 +185,8 @@ impl Query {
                 "payee" => Sort::Payee,
                 "account" => Sort::Account,
                 "category" => Sort::Category,
-                _ => return Err("sort must be date, amount, payee, account or category".to_string()),
+                "notes" => Sort::Notes,
+                _ => return Err("sort must be date, amount, payee, account, category or notes".to_string()),
             };
         }
         if let Some(d) = decoded("dir")? {
@@ -320,7 +322,7 @@ impl Filter<'_> {
             }
         }
         if let Some(s) = &q.q {
-            if !(t.payee_lc.contains(s.as_str()) || t.original_lc.contains(s.as_str()) || t.notes_lc.contains(s.as_str())) {
+            if !(t.payee_lc.contains(s.as_str()) || t.original_lc.contains(s.as_str()) || t.notes_lc.contains(s.as_str()) || t.user_notes_lc.contains(s.as_str())) {
                 return false;
             }
         }
@@ -335,6 +337,7 @@ fn sort_key(t: &Txn, s: Sort) -> u64 {
         Sort::Payee => t.key_payee as u64,
         Sort::Account => t.key_account as u64,
         Sort::Category => t.key_category as u64,
+        Sort::Notes => t.key_notes as u64,
     }
 }
 

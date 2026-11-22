@@ -16,12 +16,13 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `3` | Sort by payee (again: reverse) |
 | `4` | Sort by account (again: reverse) |
 | `5` | Sort by category (again: reverse) |
+| `6` | Sort by notes (again: reverse) |
 | `b` | Show or hide the sidebar |
 | `Tab` | Focus next pane: sidebar, table, detail |
 | `Shift-Tab` | Focus previous pane |
 | `Left` | Move focus to the pane on the left (sidebar; opens it if hidden) |
 | `Right` | Move focus to the pane on the right (table, then detail) |
-| `i` / `Enter` | Show or hide the detail pane |
+| `i` | Show or hide the detail pane |
 | `x` | Clear all filters |
 | `X` | Clear the newest filter chip |
 | `r` | Refresh from Lunch Money, then reload |
@@ -51,9 +52,10 @@ Scopes: a focused pane's keys are checked before `Anywhere`, so a pane can shado
 | `Space` | Mark or unmark the cursor row, then move down |
 | `V` | Start a visual range from the cursor (`j`/`k` extend it); `Esc` leaves visual mode and keeps the marks |
 | `Ctrl-a` | Mark every row matching the filters (loads all matching pages first, capped at 5000) |
+| `Enter` / `e` | Open the note dialog (NOTES column) for the marked rows, else the cursor row. It shows the transaction, prefills its note (empty when several rows are marked; it replaces all their notes), and counts characters out of 255; `u` undoes the save |
 | `c` | Categorize: the marked rows, else the cursor row. `Uncategorized` clears; `+ New category…` takes a path like `Home/Pets/Dogs` |
 | `C` | Categorize with preview: pick a category, then review clusters (similar payees, recurring, amount bands) before anything is written. Same rows as `c` (up to 500 marked); `y` applies in one batch, `u` undoes it |
-| `Esc` | Clear marks first; quits only when nothing is marked. Elsewhere `Esc` returns to the table |
+| `Esc` | Clear marks first (ends visual mode first if it is on). Esc never quits; use `q`. |
 
 ### Category manager (`m`; overlay, keys work inside it)
 
@@ -146,7 +148,7 @@ Pressing `1`/`2`/`3` or `c` only chooses the group's pending category. Nothing i
 | `j` / `Down` | Scroll down |
 | `k` / `Up` | Scroll up |
 | `PgDown` / `PgUp` | Scroll down / up a page |
-| `i` / `Enter` | Close the detail pane |
+| `i` | Close the detail pane |
 | `Esc` | Back to the table |
 | `Ctrl-y` | Accept the suggested category for an uncategorized row (the ghost chip; `u` undoes it). Off with the reason shown when suggestions are disabled |
 
@@ -181,6 +183,16 @@ The bar owns its keys while it is open. Typing filters the table live once the q
 | `Enter` | Apply (empty clears; a bad value is shown inline and never sent to the backend) |
 | `Esc` | Cancel |
 
+### Note dialog (Enter or `e` on a transaction)
+
+| Key | Action |
+| --- | --- |
+| `Enter` | Save the note (empty removes it; over 255 characters or a control character is shown inline and never sent) |
+| `Esc` | Cancel without saving |
+| `Ctrl-U` | Clear the field |
+
+The Save and Cancel buttons also work with the mouse. The detail pane moved to `i` only.
+
 ### Search syntax
 
 Terms are separated by spaces and ANDed together. A pinned query shows as the first chip (`/ ...`); `x` clears it with the other filters. It is ANDed with the sidebar and menu filters.
@@ -191,11 +203,11 @@ Terms are separated by spaces and ANDed together. A pinned query shows as the fi
 | `"blue bottle"` | Quoted phrase, matched as text |
 | `-amazon` | Negated: excludes the bare word |
 | `p:` / `a:` / `c:` | Payee / account / category path (`c:home/maint`, `c:none` for uncategorized) |
-| `n:` | Notes |
+| `n:` | Your notes: `n:vacation` (contains), `n:*` (has any note), `-n:*` (no note) |
 | `d:` | Date: `2026-10`, `2026-10-01..2026-11-15`, `>2026-01-01`, presets (`today`, `yesterday`, `this-week`, `last-week`, `this-month`, `last-month`, `this-quarter`, `last-quarter`, `ytd`, `this-year`, `last-year`), relative `7d` `3m` `1y` `>30d` |
 | `amount:` / bare `>50` / `10..50` | Amount (absolute value; a bare comparison or range works without `amount:`) |
 | `is:` | `recurring` `pending` `transfer` `income` `expense` `uncat` `categorized` |
-| `sort:` | `sort:-amount`, `sort:date`, and so on (`-` reverses) |
+| `sort:` | `sort:-amount`, `sort:date`, `sort:notes`, and so on (`-` reverses) |
 | `a,b` | Comma list inside a value means OR: `a:chase,amex` |
 
 Examples:

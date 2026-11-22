@@ -152,7 +152,7 @@ fn transactions_default_shape_and_totals() {
     keys.sort();
     assert_eq!(
         keys,
-        vec!["account", "account_id", "amount", "category", "category_id", "currency", "date", "id", "lm_category", "payee", "pending", "recurring"]
+        vec!["account", "account_id", "amount", "category", "category_id", "currency", "date", "id", "lm_category", "notes", "payee", "pending", "recurring"]
     );
     // payee NULL shows as empty string; no account, no category
     assert_eq!(row["payee"], "");
@@ -236,6 +236,7 @@ fn transaction_detail() {
     assert_eq!(t3["tags"], serde_json::json!([]));
     assert_eq!(t3["recurring"], false);
     assert!(t3["original_name"].is_null());
+    assert!(t3["lm_notes"].is_null());
     assert!(t3["notes"].is_null());
     assert!(t3["created_at_lm"].is_null());
     for k in ["status", "source", "recurring_id", "external_id", "updated_at_lm"] {
@@ -1275,5 +1276,222 @@ fn insights_end_to_end_through_the_real_handlers() {
     let (_, sg3) = send(&s, "POST", "/suggest", r#"{"ids":[313]}"#);
     let o = &sg3["suggestions"][0]["options"][0];
     assert_eq!((o["source"].as_str(), o["confidence"].as_f64(), o["category_id"].as_i64()), (Some("rule"), Some(1.0), Some(paint)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- user notes -----------------------------------------------------------------------------------
+
+fn note_of(s: &AppState, id: i64) -> Value {
+    get(s, &format!("/transactions/{id}")).1["notes"].clone()
+}
+
+#[test]
+fn notes_route_set_clear_validate_undo_redo() {
+    let (dir, path, s) = loaded_state();
+    assert!(note_of(&s, 1).is_null());
+    let (code, body) = send(&s, "PUT", "/transactions/1/notes", r#"{"notes":"  Summer Vacation  "}"#);
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["label"], "Set note on 1 transaction");
+    assert!(body["batch_id"].is_i64());
+    // trimmed, cached, shown in the list rows and the detail, stored in the column
+    assert_eq!(note_of(&s, 1), "Summer Vacation");
+    let (_, list) = get_q(&s, "/transactions", "sort=date&dir=asc");
+    let row = list["rows"].as_array().unwrap().iter().find(|r| r["id"] == 1).unwrap();
+    assert_eq!(row["notes"], "Summer Vacation");
+    let stored: Option<String> = raw(&path).query_row("SELECT user_notes FROM transactions WHERE id=1", [], |r| r.get(0)).unwrap();
+    assert_eq!(stored.as_deref(), Some("Summer Vacation"));
+    // the Lunch Money notes are untouched
+    assert!(get(&s, "/transactions/1").1["lm_notes"].is_null());
+
+    // same value again: no batch
+    let (code, body) = send(&s, "PUT", "/transactions/1/notes", r#"{"notes":"Summer Vacation"}"#);
+    assert_eq!((code, body["batch_id"].is_null(), body["label"].as_str()), (200, true, Some("No change")));
+
+    // undo restores NULL, redo re-applies
+    let (code, body) = send(&s, "POST", "/undo", "{}");
+    assert_eq!(code, 200, "{body}");
+    assert!(note_of(&s, 1).is_null());
+    let (code, _) = send(&s, "POST", "/redo", "{}");
+    assert_eq!(code, 200);
+    assert_eq!(note_of(&s, 1), "Summer Vacation");
+
+    // change, then clear with "" and with null; undo walks back through each value
+    send(&s, "PUT", "/transactions/1/notes", r#"{"notes":"second"}"#);
+    let (_, body) = send(&s, "PUT", "/transactions/1/notes", r#"{"notes":""}"#);
+    assert_eq!(body["label"], "Clear note on 1 transaction");
+    assert!(note_of(&s, 1).is_null());
+    let stored: Option<String> = raw(&path).query_row("SELECT user_notes FROM transactions WHERE id=1", [], |r| r.get(0)).unwrap();
+    assert!(stored.is_none(), "empty string is stored as NULL");
+    send(&s, "POST", "/undo", "{}");
+    assert_eq!(note_of(&s, 1), "second");
+    send(&s, "POST", "/undo", "{}");
+    assert_eq!(note_of(&s, 1), "Summer Vacation");
+    send(&s, "PUT", "/transactions/1/notes", r#"{"notes":null}"#);
+    assert!(note_of(&s, 1).is_null());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn notes_route_errors() {
+    let (dir, _, s) = loaded_state();
+    // exactly 255 characters is fine (multi-byte characters count once), 256 is not
+    let ok = "é".repeat(255);
+    let (code, body) = send(&s, "PUT", "/transactions/1/notes", &format!(r#"{{"notes":"{ok}"}}"#));
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(note_of(&s, 1).as_str().unwrap().chars().count(), 255);
+    let long = "x".repeat(256);
+    let (code, body) = send(&s, "PUT", "/transactions/2/notes", &format!(r#"{{"notes":"{long}"}}"#));
+    assert_eq!(code, 400);
+    assert_eq!(body["error"], "invalid");
+    assert!(body["message"].is_string());
+    assert!(note_of(&s, 2).is_null());
+    assert_eq!(send(&s, "PUT", "/transactions/99999/notes", r#"{"notes":"a"}"#).0, 404);
+    assert_eq!(send(&s, "PUT", "/transactions/abc/notes", r#"{"notes":"a"}"#).0, 400);
+    assert_eq!(send(&s, "PUT", "/transactions/1/notes", r#"{"notes":5}"#).0, 400);
+    assert_eq!(send(&s, "PUT", "/transactions/1/notes", r#"{}"#).0, 400);
+    assert_eq!(send(&s, "PUT", "/transactions/1/notes", "nope").0, 400);
+    assert_eq!(send(&s, "PUT", "/transactions/1/notes", "{\"notes\":\"a\\nb\"}").0, 400);
+    assert_eq!(send(&s, "GET", "/transactions/1/notes", "").0, 405);
+    assert_eq!(send(&s, "POST", "/transactions/1/notes", r#"{"notes":"a"}"#).0, 405);
+    assert_eq!(send(&s, "PUT", "/transactions/1/other", r#"{"notes":"a"}"#).0, 404);
+    assert_eq!(send(&s, "PUT", "/transactions/1/notes", &format!(r#"{{"notes":"{ok}"}}"#)).0, 200);
+    // a rejected write leaves one journal entry only (the valid one above)
+    let (_, j) = get(&s, "/journal");
+    assert_eq!(j["rows"].as_array().unwrap().len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn notes_bulk_is_one_undo_step_and_unknown_id_changes_nothing() {
+    let (dir, _, s) = loaded_state();
+    let (code, body) = send(&s, "POST", "/transactions/notes", r#"{"ids":[1,2,3],"notes":"trip"}"#);
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(body["label"], "Set note on 3 transactions");
+    let (code, _) = send(&s, "POST", "/transactions/notes", r#"{"ids":[1,99999],"notes":"zzz"}"#);
+    assert_eq!(code, 404);
+    assert_eq!(note_of(&s, 1), "trip");
+    assert_eq!(send(&s, "POST", "/transactions/notes", r#"{"ids":[],"notes":"a"}"#).0, 400);
+    send(&s, "POST", "/undo", "{}");
+    for id in [1, 2, 3] {
+        assert!(note_of(&s, id).is_null());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn undo_refuses_when_note_changed_underneath() {
+    let (dir, path, s) = loaded_state();
+    send(&s, "PUT", "/transactions/1/notes", r#"{"notes":"mine"}"#);
+    raw(&path).execute("UPDATE transactions SET user_notes='other' WHERE id=1", []).unwrap();
+    let (code, _) = send(&s, "POST", "/undo", "{}");
+    assert_eq!(code, 409);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn notes_filter_and_sort_through_the_api() {
+    let (dir, _, s) = loaded_state();
+    // 1 "Vacation Beach", 2 "budget", 3 "apple", 4 none
+    send(&s, "PUT", "/transactions/1/notes", r#"{"notes":"Vacation Beach"}"#);
+    send(&s, "PUT", "/transactions/2/notes", r#"{"notes":"budget"}"#);
+    send(&s, "PUT", "/transactions/3/notes", r#"{"notes":"Apple"}"#);
+    let by = |qs: &str| s_ids(&s, qs);
+    // n: is case-insensitive substring, negatable, and n:* means any note
+    let mut v = by("s=n%3Avacation");
+    v.sort();
+    assert_eq!(v, vec![1]);
+    let mut v = by("s=-n%3Avacation");
+    v.sort();
+    assert_eq!(v, vec![2, 3, 4]);
+    let mut v = by("s=n%3A*");
+    v.sort();
+    assert_eq!(v, vec![1, 2, 3]);
+    let mut v = by("s=-n%3A*");
+    v.sort();
+    assert_eq!(v, vec![4]);
+    let mut v = by("s=n%3Abudget,apple");
+    v.sort();
+    assert_eq!(v, vec![2, 3]);
+    // plain words and the q parameter also see user notes
+    assert_eq!(by("q=beach"), vec![1]);
+    // sort=notes: case-insensitive; no note ranks like an empty payee (first ascending, last descending)
+    assert_eq!(by("sort=notes&dir=asc"), vec![4, 3, 2, 1]);
+    assert_eq!(by("sort=notes&dir=desc"), vec![1, 2, 3, 4]);
+    // the search grammar's sort key
+    assert_eq!(by("s=sort%3Anotes"), vec![4, 3, 2, 1]);
+    assert_eq!(by("s=sort%3A-notes"), vec![1, 2, 3, 4]);
+    assert_eq!(get_q(&s, "/transactions", "sort=nope").0, 400);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- account nicknames ----------------------------------------------------------------------------
+
+fn account_row(s: &AppState, id: i64) -> Value {
+    let (_, body) = get(s, "/accounts");
+    body["rows"].as_array().unwrap().iter().find(|r| r["id"] == id).unwrap().clone()
+}
+
+#[test]
+fn accounts_expose_nickname_and_formal_name() {
+    let (dir, _, s) = loaded_state();
+    let a = account_row(&s, 1);
+    assert_eq!((a["name"].as_str(), a["formal_name"].as_str()), (Some("Checking"), Some("Chk raw")));
+    assert!(a["nickname"].is_null());
+    assert_eq!(account_row(&s, 2)["formal_name"], "Manual Cash");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn account_nickname_route_set_clear_undo_redo_and_search() {
+    let (dir, _, s) = loaded_state();
+    let (code, body) = send(&s, "PUT", "/accounts/1/nickname", r#"{"nickname":"  Everyday  "}"#);
+    assert_eq!(code, 200, "{body}");
+    assert_eq!((body["ok"].as_bool(), body["label"].as_str()), (Some(true), Some("Set account nickname")));
+    assert!(body["batch_id"].is_i64());
+    // the list, the transaction rows and the search all show the displayed name
+    let a = account_row(&s, 1);
+    assert_eq!((a["name"].as_str(), a["nickname"].as_str(), a["formal_name"].as_str()), (Some("Everyday"), Some("Everyday"), Some("Chk raw")));
+    assert_eq!(get(&s, "/transactions/1").1["account"], "Everyday");
+    assert_eq!(s_ids(&s, "s=a%3Aeveryday"), vec![1, 4]);
+    assert!(!s_ids(&s, "s=a%3Acheck").contains(&1), "the old display name no longer matches");
+    assert_eq!(get_q(&s, "/transactions", "account=1").1["total"], 2);
+
+    send(&s, "PUT", "/accounts/1/nickname", r#"{"nickname":"Second"}"#);
+    assert_eq!(send(&s, "POST", "/undo", "").0, 200);
+    assert_eq!(account_row(&s, 1)["nickname"], "Everyday");
+    assert_eq!(send(&s, "POST", "/redo", "").0, 200);
+    assert_eq!(account_row(&s, 1)["nickname"], "Second");
+
+    // empty clears: nickname becomes null and the display name falls back to the account's display name
+    let (code, body) = send(&s, "PUT", "/accounts/1/nickname", r#"{"nickname":""}"#);
+    assert_eq!((code, body["label"].as_str()), (200, Some("Clear account nickname")));
+    let a = account_row(&s, 1);
+    assert_eq!((a["name"].as_str(), a["nickname"].is_null()), (Some("Checking"), true));
+    assert_eq!(s_ids(&s, "s=a%3Acheck"), vec![1, 4]);
+    // an unchanged value is a 200 with no batch
+    let (code, body) = send(&s, "PUT", "/accounts/1/nickname", r#"{"nickname":null}"#);
+    assert_eq!((code, body["label"].as_str(), body["batch_id"].is_null()), (200, Some("No change"), true));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn account_nickname_route_errors() {
+    let (dir, _, s) = loaded_state();
+    assert_eq!(send(&s, "PUT", "/accounts/99999/nickname", r#"{"nickname":"a"}"#).0, 404);
+    let (code, body) = send(&s, "PUT", "/accounts/1/nickname", &format!(r#"{{"nickname":"{}"}}"#, "x".repeat(41)));
+    assert_eq!((code, body["error"].as_str()), (400, Some("invalid")));
+    assert!(body["message"].is_string());
+    assert_eq!(send(&s, "PUT", "/accounts/1/nickname", r#"{"nickname":"a\tb"}"#).0, 400);
+    assert_eq!(send(&s, "PUT", "/accounts/1/nickname", r#"{"nickname":5}"#).0, 400);
+    assert_eq!(send(&s, "PUT", "/accounts/1/nickname", r#"{}"#).0, 400);
+    assert_eq!(send(&s, "PUT", "/accounts/1/nickname", "nope").0, 400);
+    assert_eq!(send(&s, "PUT", "/accounts/abc/nickname", r#"{"nickname":"a"}"#).0, 400);
+    assert_eq!(send(&s, "PUT", "/accounts/1/nickname/x", r#"{"nickname":"a"}"#).0, 404);
+    assert_eq!(send(&s, "GET", "/accounts/1/nickname", "").0, 405);
+    assert_eq!(send(&s, "POST", "/accounts/1/nickname", r#"{"nickname":"a"}"#).0, 405);
+    // rejected writes changed nothing and journaled nothing
+    assert!(account_row(&s, 1)["nickname"].is_null());
+    assert_eq!(get(&s, "/journal").1["rows"].as_array().unwrap().len(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }

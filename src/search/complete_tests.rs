@@ -179,8 +179,8 @@ fn dates_is_and_sort() {
     assert_eq!(at_end(Some(&c), "-is:re").items[0].insert, "-is:recurring");
 
     let r = at_end(None, "sort:");
-    assert_eq!(r.items.len(), 10);
-    assert_eq!(labels(&r)[..5], ["date", "amount", "payee", "account", "category"]);
+    assert_eq!(r.items.len(), 12);
+    assert_eq!(labels(&r)[..6], ["date", "amount", "payee", "account", "category", "notes"]);
     assert_eq!(labels(&at_end(None, "sort:-a")), vec!["-amount", "-account"]);
     assert_eq!(at_end(None, "sort:-a").items[0].insert, "sort:-amount");
     assert_eq!(labels(&at_end(None, "sort:am")), vec!["amount", "-amount"]);

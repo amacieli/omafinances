@@ -138,7 +138,7 @@ pub(super) fn view_save(state: &AppState, body: &[u8]) -> (u16, Value) {
     if let Some(s) = sort {
         let key = s.strip_prefix('-').unwrap_or(s);
         if search::SortKey::from_name(key).is_none() {
-            return error(400, "sort must be date, amount, payee, account or category, optionally with a leading -");
+            return error(400, "sort must be date, amount, payee, account, category or notes, optionally with a leading -");
         }
     }
     if let Err(e) = search::parse(query, state.today()) {

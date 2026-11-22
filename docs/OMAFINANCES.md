@@ -47,11 +47,14 @@ after a sync.
     `sum_out` and `sum_in` (over all matches, not only the page), and `rows`.
   - Each row: `id, date, payee, amount, currency, account_id, account, category` (local path such as
     `Home › Improvement › Paint`, or null), `category_id` (local id or null), `lm_category` (Lunch
-    Money name or null), `pending`, `recurring`.
-- `GET /transactions/<id>`: the row plus `original_name, notes, status, source, tags, recurring_id,
+    Money name or null), `pending`, `recurring`, `notes` (your own note, `transactions.user_notes`, or null; `sort=notes` is
+    case-insensitive, no note first ascending).
+- `GET /transactions/<id>`: the row plus `original_name, lm_notes (Lunch Money's notes), status, source, tags, recurring_id,
   external_id, created_at_lm, updated_at_lm`. 400 if `<id>` is not an integer, 404 if unknown.
 - `GET /accounts`: `rows` ordered by name, each with `id, name, type, institution, mask, balance,
-  currency, count, sum_out`. `balance` is the latest snapshot, or null.
+  currency, count, sum_out, nickname, formal_name`. `name` is the display name: nickname if set, else the
+  account's display name, else its account name. `nickname` is your own name for the account (null when
+  unset). `formal_name` is the account's own name, unchanged. `balance` is the latest snapshot, or null.
 - `GET /categories`: `rows` in tree order (parent before children, siblings by sort then name), each
   with `id, parent_id, name, kind, depth, count, count_subtree, sum_out_subtree`, plus
   `uncategorized` (transactions with no local category).
@@ -68,7 +71,7 @@ and error bodies carry only the parse message.
   (`\"` for a literal quote). A bare word is a case-insensitive substring over payee, original name
   and notes. `field:value` terms accept a comma list meaning OR (`p:amazon,costco`).
 - `p:` (`payee`) payee or original name; `a:` (`acct`, `account`) account name; `n:` (`note`,
-  `notes`) notes; `lm:` Lunch Money category name; `id:` exact ids.
+  `notes`) your notes (`n:*` = has a note, `-n:*` = none); `lm:` Lunch Money category name; `id:` exact ids.
 - `c:` (`cat`, `category`) local category path. `c:home` is Home and all descendants; `c:home/maint`
   matches path segments by case-insensitive prefix (Home › Maintenance); `c:none` is no local
   category. Quote paths with spaces: `c:"home/sub 0"`. The completer inserts exactly this form.
@@ -82,7 +85,7 @@ and error bodies carry only the parse message.
   exactly three digits is a thousands separator, any other comma is OR (`amount:10,20`).
 - `is:` `recurring pending transfer income expense uncat categorized`. `income` is amount < 0,
   `expense` is amount > 0, `transfer` is a Lunch Money category containing "transfer".
-- `sort:date|amount|payee|account|category`, `-` before the key for descending (`sort:-amount`). It is a
+- `sort:date|amount|payee|account|category|notes`, `-` before the key for descending (`sort:-amount`). It is a
   directive, not a filter; once per query.
 - Errors name the byte position and length and suggest a fix (`unknown field "pyee"; did you mean
   "p"?`). Rows whose stored date is not a valid date never match a `d:` term.
@@ -124,6 +127,9 @@ All mutations are POST with a JSON body, run in one SQLite transaction, write on
 | `POST /categories/<id>/delete` | `{reassign_to}` | its transactions move (or become uncategorized); children move up |
 | `POST /categories/<id>/merge` | `{into}` | same-name children merge recursively |
 | `POST /transactions/categorize` | `{ids, category_id}` | max 5000 ids; `null` uncategorizes |
+| `PUT /transactions/<id>/notes` | `{notes}` | string up to 255 chars (trimmed; `""` or null clears); 400 too long, 404 unknown id; 200 `{ok, batch_id, label}` (`batch_id` null if unchanged) |
+| `POST /transactions/notes` | `{ids, notes}` | one note on up to 5000 ids, one undo step; unknown id: 404, nothing changes |
+| `PUT /accounts/<id>/nickname` | `{nickname}` | string up to 40 chars (trimmed; `""` or null clears); no control characters; 400 invalid, 404 unknown account; 200 `{ok, batch_id, label}` (`batch_id` null if unchanged). Undoable. Shown as the account's `name` everywhere (list, transaction rows, `a:` search) |
 | `POST /undo`, `POST /redo` | none | 409 `nothing_to_undo` / `conflict` (data changed underneath) |
 | `GET /journal?limit=` | | `{rows, can_undo, can_redo, next_undo_label, next_redo_label}` |
 

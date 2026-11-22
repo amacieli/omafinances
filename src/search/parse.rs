@@ -263,7 +263,7 @@ fn parse_token(
         };
         let Some(k) = SortKey::from_name(key) else {
             let cands: Vec<(&str, &str)> = SortKey::ALL.iter().map(|k| (k.name(), k.name())).collect();
-            let msg = did_you_mean("sort key", key, &cands, "keys are date, amount, payee, account, category");
+            let msg = did_you_mean("sort key", key, &cands, "keys are date, amount, payee, account, category, notes");
             return Err(err(input, it.start, it.end - it.start, msg));
         };
         *sort = Some((k, dir));

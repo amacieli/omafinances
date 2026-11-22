@@ -96,11 +96,18 @@ impl Matcher {
 
     fn test(&self, t: &Txn) -> bool {
         match self {
-            Matcher::Text(s) => t.payee_lc.contains(s.as_str()) || t.original_lc.contains(s.as_str()) || t.notes_lc.contains(s.as_str()),
+            Matcher::Text(s) => t.payee_lc.contains(s.as_str()) || t.original_lc.contains(s.as_str()) || t.notes_lc.contains(s.as_str()) || t.user_notes_lc.contains(s.as_str()),
             Matcher::Payee(v) => v.iter().any(|s| t.payee_lc.contains(s.as_str()) || t.original_lc.contains(s.as_str())),
             Matcher::Account(v) => v.iter().any(|s| t.account_lc.contains(s.as_str())),
             Matcher::Lm(v) => v.iter().any(|s| t.lm_lc.contains(s.as_str())),
-            Matcher::Notes(v) => v.iter().any(|s| t.notes_lc.contains(s.as_str())),
+            // `n:*` is "has any note"; otherwise a substring of the user's note or Lunch Money's.
+            Matcher::Notes(v) => v.iter().any(|s| {
+                if s == "*" {
+                    !t.user_notes_lc.is_empty() || !t.notes_lc.is_empty()
+                } else {
+                    t.user_notes_lc.contains(s.as_str()) || t.notes_lc.contains(s.as_str())
+                }
+            }),
             Matcher::Id(v) => v.contains(&t.id),
             Matcher::Date(v) => t.date_key != 0 && v.iter().any(|&(lo, hi)| t.date_key >= lo && t.date_key <= hi),
             Matcher::Amount(v) => {
